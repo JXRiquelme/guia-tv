@@ -1,0 +1,25 @@
+name: Actualizar guía
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  guia:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Armar guía
+        env:
+          SERVER_XMLTV_URL: ${{ secrets.SERVER_XMLTV_URL }}
+        run: python3 build_guide.py
+      - name: Guardar cambios
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add guia.xml informe.txt
+          git diff --cached --quiet || (git commit -m "Actualizar guía" && git push)
