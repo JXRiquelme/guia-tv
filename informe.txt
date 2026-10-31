@@ -1,10 +1,10 @@
-Actualizado: 2026-10-31 11:34 UTC
+Actualizado: 2026-10-31 11:55 UTC
 
-fuente cl: 3033 programas usados
-fuente srv: 6413 programas usados
-fuente ar: 558 programas usados
+fuente cl: 3024 programas usados
+fuente srv: 6400 programas usados
+fuente ar: 436 programas usados
 fuente dtv: 157 programas usados
-fuente es: 552 programas usados
+fuente es: 551 programas usados
 canal13          cl / Canal.13.de.Chile.cl (ajuste +0 min)
 t13              srv / C13T13 (ajuste +0 min)
 13c              srv / C13CABH (ajuste +0 min)
@@ -28,13 +28,13 @@ usa              ar / Canal.USA.Network.(Argentina).ar (ajuste +0 min)
 tntseries        srv / TNTSPAH (ajuste +0 min)
 adultswim        srv / ADSMH (ajuste +0 min)
 universaltv      srv / UNILAHD (ajuste +0 min)
-warner           cl / Canal.Warner.TV.(Chile).cl (ajuste +0 min)
+warner           srv / WARCOL (ajuste -120 min)
 cinemax          cl / Canal.Cinemax.(Chile).cl (ajuste +0 min)
 sonymovies       srv / SONY (ajuste +0 min)
 studiouniversal  srv / STULA (ajuste +0 min)
 hbo              cl / Canal.HBO.(Chile).cl (ajuste +0 min)
 hbo2             cl / Canal.HBO.2.Latinoamérica.cl (ajuste +0 min)
-hboplus          cl / Canal.HBO.Plus.cl (ajuste +0 min)
+hboplus          srv / HBOPPA (ajuste +0 min)
 hbofamily        cl / Canal.HBO.Family.Latinoamérica.cl (ajuste +0 min)
 hbosignature     cl / Canal.HBO.Signature.Latinoamérica.cl (ajuste +0 min)
 hbopop           cl / Canal.HBO.Pop.cl (ajuste +0 min)
