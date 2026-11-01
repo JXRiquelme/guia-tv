@@ -72,6 +72,8 @@ CHANNELS = [
     ("dazn4", "DAZN 4", [("es", "DAZN.4.es", 0)]),
     ("daznlaliga1", "DAZN LaLiga 1", [("es", "DAZN.LaLiga.es", 0), ("es", "DAZN.LALIGA.es", 0)]),
     ("daznlaliga2", "DAZN LaLiga 2", [("es", "DAZN.LaLiga.2.es", 0), ("es", "DAZN.LALIGA.2.es", 0)]),
+    ("laligatv", "LaLiga TV M+", [("srv", "MOLIGA", 0), ("es", "M+.LALIGA.TV.es", 0), ("es", "LaLiga.TV.es", 0)]),
+    ("rmtv", "Real Madrid TV", [("srv", "RMAD", 0), ("es", "Real.Madrid.TV.es", 0)]),
     ("ligacampeones", "Liga de Campeones", [("es", "M+.Liga.de.Campeones.es", 0), ("es", "Movistar.Liga.de.Campeones.es", 0)]),
     ("cuatro", "Cuatro", [("es", "Cuatro.es", 0)]),
 ]
