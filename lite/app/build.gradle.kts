@@ -11,8 +11,8 @@ android {
         applicationId = "cl.jxr.aeriolite"
         minSdk = 21
         targetSdk = 35
-        versionCode = 11
-        versionName = "1.8"
+        versionCode = 12
+        versionName = "1.8.1"
     }
 
     signingConfigs {

@@ -446,7 +446,10 @@ class MainActivity : Activity() {
             .setUserAgent(Net.USER_AGENT)
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(20_000)
+            .setReadTimeoutMs(15_000)
+            // Close each stream's socket when switching: IPTV servers often allow a single
+            // connection per account and keep a reused/half-open one "busy" for a while.
+            .setDefaultRequestProperties(mapOf("Connection" to "close"))
         val extractors = DefaultExtractorsFactory().setTsExtractorFlags(
             DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
                 DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
@@ -467,6 +470,7 @@ class MainActivity : Activity() {
                         showStatus(if (vod != null && note != null) "Cargando…\n$note" else "Cargando…")
                     }
                     Player.STATE_READY -> {
+                        main.removeCallbacks(stallWatch)
                         retries = 0
                         resumeNote = null
                         hideStatus()
@@ -516,6 +520,7 @@ class MainActivity : Activity() {
 
     private fun play(index: Int) {
         if (channels.isEmpty()) return
+        main.removeCallbacks(pendingZap)
         saveVodProgress()
         if (vod != null) shutter.visibility = View.VISIBLE
         vod = null
@@ -532,18 +537,50 @@ class MainActivity : Activity() {
         p.setMediaItem(item.build())
         p.prepare()
         p.playWhenReady = true
+        playToken++
+        main.removeCallbacks(stallWatch)
+        main.postDelayed(stallWatch, 12_000)
         showInfo(false)
     }
+
+    /** Bumped on every new channel/movie so delayed retries of an older one are ignored. */
+    private var playToken = 0
+
+    /**
+     * A live stream that stays in "Cargando…" (server not answering, usually because the
+     * previous connection is still counted as open) is reconnected instead of hanging forever.
+     */
+    private val stallWatch: Runnable = object : Runnable {
+        override fun run() {
+            val p = player ?: return
+            if (vod != null || p.playbackState == Player.STATE_READY) return
+            if (retries < 3) {
+                retries++
+                showStatus("Reconectando… ($retries/3)")
+                p.stop()
+                p.prepare()
+                p.playWhenReady = true
+                main.postDelayed(this, 12_000)
+            } else {
+                showStatus("No se pudo reproducir ${channels.getOrNull(current)?.name ?: "el canal"}.\nPrueba otro canal o vuelve a intentar.")
+            }
+        }
+    }
+
+    /**
+     * ▲▼ zapping: the banner follows each press at once, but the stream only opens when the
+     * presses stop (≈0.6 s). Fast zapping no longer opens a connection per channel.
+     */
+    private val pendingZap = Runnable { play(current) }
 
     private fun retry() {
         val p = player ?: return
         if (retries < 3) {
             retries++
             showStatus("Reconectando… ($retries/3)")
-            val index = current
-            val playing = vod
+            val token = playToken
             main.postDelayed({
-                if (player === p && current == index && vod === playing) {
+                if (player === p && token == playToken) {
                     p.prepare()
                     p.playWhenReady = true
                 }
@@ -556,12 +593,16 @@ class MainActivity : Activity() {
 
     private fun releasePlayer() {
         main.removeCallbacks(vodSaver)
+        main.removeCallbacks(stallWatch)
+        main.removeCallbacks(pendingZap)
         player?.release()
         player = null
     }
 
     private fun stopPlayback() {
         main.removeCallbacks(vodSaver)
+        main.removeCallbacks(stallWatch)
+        main.removeCallbacks(pendingZap)
         player?.stop()
         hideStatus()
     }
@@ -576,7 +617,14 @@ class MainActivity : Activity() {
 
     private fun zap(step: Int) {
         if (channels.isEmpty()) return
-        play(neighbor(step))
+        current = neighbor(step)
+        main.removeCallbacks(stallWatch)
+        player?.stop()                      // drop the old stream right away
+        shutter.visibility = View.VISIBLE   // no frozen frame of the old channel
+        hideStatus()
+        showInfo(false)
+        main.removeCallbacks(pendingZap)
+        main.postDelayed(pendingZap, 600)
     }
 
     private fun fitVideo() {
@@ -633,6 +681,8 @@ class MainActivity : Activity() {
         if (resumeAt > 0) p.seekTo(resumeAt)
         p.prepare()
         p.playWhenReady = true
+        playToken++
+        main.removeCallbacks(stallWatch)
         subtitleText.text = ""
         subtitleText.visibility = View.GONE
         // Appears in "Seguir viendo" right away, not only after some minutes.
