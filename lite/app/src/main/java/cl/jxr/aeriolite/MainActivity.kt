@@ -13,8 +13,10 @@ import android.os.Looper
 import android.text.InputType
 import android.text.TextUtils
 import android.util.TypedValue
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
@@ -824,20 +826,52 @@ class MainActivity : Activity() {
                     root.requestFocus()
                 }
             }
-            panel.visibility == View.VISIBLE -> hidePanel()
+            panel.visibility == View.VISIBLE -> {
+                hidePanel()
+                armExit()
+            }
             browser.visibility == View.VISIBLE -> browserBack()
             vod != null -> leaveVod()
             setup.visibility == View.VISIBLE && channels.isNotEmpty() -> {
                 hideSetup()
                 play(current)
             }
-            info.visibility == View.VISIBLE -> info.visibility = View.GONE
             System.currentTimeMillis() - lastBack < 2500 -> finish()
-            else -> {
-                lastBack = System.currentTimeMillis()
-                Toast.makeText(this, "Presiona Atrás otra vez para salir", Toast.LENGTH_SHORT).show()
-            }
+            channels.isNotEmpty() -> showPanel()
+            else -> armExit()
         }
+    }
+
+    private fun armExit() {
+        lastBack = System.currentTimeMillis()
+        Toast.makeText(this, "Presiona Atrás otra vez para salir", Toast.LENGTH_SHORT).show()
+    }
+
+    // ---------------------------------------------------------------- touch (phones / tablets)
+
+    private fun overlayOpen() = setup.visibility == View.VISIBLE || account.visibility == View.VISIBLE ||
+        browser.visibility == View.VISIBLE
+
+    private fun onTap() {
+        when {
+            overlayOpen() -> {}
+            panel.visibility == View.VISIBLE -> hidePanel()
+            vod != null -> {
+                val p = player
+                if (vodBar.visibility == View.VISIBLE && p != null) {
+                    p.playWhenReady = !p.playWhenReady
+                    if (!p.playWhenReady) saveVodProgress()
+                }
+                showVodBar()
+            }
+            else -> showPanel()
+        }
+    }
+
+    /** Horizontal swipe: live -> change channel (left = next), movie -> seek 30 s. */
+    private fun onSwipe(toLeft: Boolean) {
+        if (overlayOpen() || panel.visibility == View.VISIBLE) return
+        if (vod != null) seekBy(if (toLeft) 30_000L else -30_000L) else zap(if (toLeft) 1 else -1)
     }
 
     private fun typeDigit(d: Int) {
@@ -1015,6 +1049,23 @@ class MainActivity : Activity() {
         }
         surface = SurfaceView(this)
         root.addView(surface, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+        val minSwipe = dp(80)
+        val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent) = true
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                onTap()
+                return true
+            }
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+                val start = e1 ?: return false
+                val dx = e2.x - start.x
+                val dy = e2.y - start.y
+                if (Math.abs(dx) < minSwipe || Math.abs(dx) < Math.abs(dy) * 1.5f) return false
+                onSwipe(dx < 0)
+                return true
+            }
+        })
+        root.setOnTouchListener { _, e -> gestures.onTouchEvent(e); true }
 
         // Bottom info banner (live)
         info = LinearLayout(this).apply {
@@ -1073,6 +1124,7 @@ class MainActivity : Activity() {
 
         // Channel list panel
         panel = LinearLayout(this).apply {
+            isClickable = true
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xF00A1238.toInt())
             setPadding(dp(16), dp(18), dp(16), dp(10))
@@ -1109,6 +1161,7 @@ class MainActivity : Activity() {
 
         // Movies / series browser
         browser = LinearLayout(this).apply {
+            isClickable = true
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFA081030.toInt())
             setPadding(dp(32), dp(22), dp(32), dp(14))
@@ -1152,6 +1205,7 @@ class MainActivity : Activity() {
 
         // Playlist setup screen
         setup = LinearLayout(this).apply {
+            isClickable = true
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(36), dp(28), dp(36), dp(28))
@@ -1175,6 +1229,7 @@ class MainActivity : Activity() {
 
         // Xtream account screen
         account = LinearLayout(this).apply {
+            isClickable = true
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(36), dp(28), dp(36), dp(28))
