@@ -262,14 +262,58 @@ class History(private val prefs: SharedPreferences) {
         save()
     }
 
-    /** Unfinished movies, or unfinished episodes (one per series), newest first. */
+    /** Started but unfinished movies, or episodes (latest one per series), newest first. */
     fun continueWatching(series: Boolean): List<Watch> {
         val seen = HashSet<String>()
         return entries.filter { w ->
-            w.episode == series && !w.finished && w.position > 30_000 &&
-                (!series || seen.add(w.seriesId.ifEmpty { w.id }))
+            w.episode == series && (!series || seen.add(w.seriesId.ifEmpty { w.id })) && !w.finished
         }
     }
 
+    fun remove(w: Watch) {
+        if (w.episode && w.seriesId.isNotEmpty()) entries.removeAll { it.seriesId == w.seriesId }
+        else entries.removeAll { it.key == w.key }
+        save()
+    }
+
     fun watched(key: String) = get(key)?.finished == true
+}
+
+/** "Ver más tarde" list (only on this device). */
+class Later(private val prefs: SharedPreferences) {
+    private val entries: MutableList<VodItem> = load()
+
+    private fun load(): MutableList<VodItem> = try {
+        val a = JSONArray(prefs.getString("later", "[]"))
+        MutableList(a.length()) {
+            val o = a.getJSONObject(it)
+            VodItem(o.optBoolean("series"), o.optString("id"), o.optString("title"), o.optString("poster"),
+                o.optString("ext", "mp4"), o.optString("year"), o.optString("rating"), o.optString("cat"))
+        }
+    } catch (e: Exception) {
+        ArrayList()
+    }
+
+    private fun save() {
+        val a = JSONArray()
+        entries.forEach {
+            a.put(JSONObject().put("series", it.series).put("id", it.id).put("title", it.title).put("poster", it.poster)
+                .put("ext", it.ext).put("year", it.year).put("rating", it.rating).put("cat", it.categoryId))
+        }
+        prefs.edit().putString("later", a.toString()).apply()
+    }
+
+    fun list(series: Boolean) = entries.filter { it.series == series }
+    fun contains(item: VodItem) = entries.any { it.series == item.series && it.id == item.id }
+
+    fun add(item: VodItem) {
+        if (contains(item)) return
+        entries.add(0, item)
+        save()
+    }
+
+    fun remove(item: VodItem) {
+        entries.removeAll { it.series == item.series && it.id == item.id }
+        save()
+    }
 }

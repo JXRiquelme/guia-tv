@@ -40,6 +40,10 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.media3.common.C
+import androidx.media3.common.Format
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -73,6 +77,7 @@ class MainActivity : Activity() {
         const val MODE_CATEGORY = 0
         const val MODE_CONTINUE = 1
         const val MODE_SEARCH = 2
+        const val MODE_LATER = 3
 
         const val ACCENT = 0xFF7FD3FF.toInt()
         const val MUTED = 0xFFB8C7F0.toInt()
@@ -85,6 +90,8 @@ class MainActivity : Activity() {
     private lateinit var prefs: SharedPreferences
     private lateinit var logos: Logos
     private lateinit var history: History
+    private lateinit var later: Later
+    private var aspectMode = 0 // 0 normal, 1 16:9, 2 4:3
 
     private var channels: List<Channel> = emptyList()
     private var guide: Map<String, List<Program>> = emptyMap()
@@ -149,6 +156,19 @@ class MainActivity : Activity() {
     private lateinit var vodSub: TextView
     private lateinit var vodProgress: ProgressBar
     private lateinit var vodTime: TextView
+    private lateinit var btnPlay: TextView
+    private lateinit var vodControls: List<TextView>
+    private lateinit var subtitleText: TextView
+
+    // Generic option picker (audio, subtitles, aspect, item menu)
+    private lateinit var pickerBox: LinearLayout
+    private lateinit var pickerTitle: TextView
+    private lateinit var pickerList: ListView
+    private var pickerOptions: List<String> = emptyList()
+    private var pickerSelected = -1
+    private var pickerAction: ((Int) -> Unit)? = null
+    private var pickerReturnFocus: View? = null
+    private val pickerAdapter = PickerAdapter()
 
     // Movies / series browser
     private lateinit var browser: LinearLayout
@@ -166,6 +186,13 @@ class MainActivity : Activity() {
     private lateinit var seriesTitle: TextView
     private lateinit var seriesInfo: TextView
     private lateinit var episodeList: ListView
+    private lateinit var seasonScroll: HorizontalScrollView
+    private lateinit var seasonRow: LinearLayout
+    private var seasonEpisodes: List<Episode> = emptyList()
+    private var selectedSeason = -1
+    private lateinit var topToggleContinue: TextView
+    private lateinit var topToggleLater: TextView
+    private var topMode = 0 // 0 seguir viendo, 1 ver más tarde
     private val rowAdapter = GridRowAdapter()
     private val episodeAdapter = EpisodeAdapter()
     private var browserSeries = false
@@ -206,6 +233,7 @@ class MainActivity : Activity() {
         prefs = getSharedPreferences("lite", Context.MODE_PRIVATE)
         logos = Logos(this)
         history = History(prefs)
+        later = Later(prefs)
         hiddenChannels = HashSet(prefs.getStringSet("hide_ch", emptySet()) ?: emptySet())
         hiddenMovieCats = HashSet(prefs.getStringSet("hide_vod", emptySet()) ?: emptySet())
         hiddenSeriesCats = HashSet(prefs.getStringSet("hide_series", emptySet()) ?: emptySet())
@@ -392,6 +420,12 @@ class MainActivity : Activity() {
                 if (vod != null) updateVodBar()
             }
 
+            override fun onCues(cueGroup: CueGroup) {
+                val t = cueGroup.cues.mapNotNull { it.text?.toString() }.joinToString("\n").trim()
+                subtitleText.text = t
+                subtitleText.visibility = if (t.isEmpty() || vod == null) View.GONE else View.VISIBLE
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
                     player?.seekToDefaultPosition()
@@ -420,6 +454,8 @@ class MainActivity : Activity() {
         saveVodProgress()
         vod = null
         hideVodBar()
+        subtitleText.visibility = View.GONE
+        if (aspectMode != 0) { aspectMode = 0; fitVideo() }
         current = index.coerceIn(0, channels.size - 1)
         retries = 0
         val ch = channels[current]
@@ -480,7 +516,11 @@ class MainActivity : Activity() {
         val w = root.width
         val h = root.height
         if (w == 0 || h == 0 || videoW == 0 || videoH == 0) return
-        val aspect = videoW * videoRatio / videoH
+        val aspect = when (aspectMode) {
+            1 -> 16f / 9f
+            2 -> 4f / 3f
+            else -> videoW * videoRatio / videoH
+        }
         val lp = surface.layoutParams as FrameLayout.LayoutParams
         if (w.toFloat() / h > aspect) {
             lp.height = h
@@ -514,16 +554,21 @@ class MainActivity : Activity() {
         hideInfo.run()
         vod = w
         retries = 0
+        if (aspectMode != 0) { aspectMode = 0; fitVideo() }
         val url = if (w.episode) acc.episodeUrl(w.id, w.ext) else acc.movieUrl(w.id, w.ext)
         val item = MediaItem.Builder().setUri(url)
         if (w.ext.equals("m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
         val p = ensurePlayer()
         p.setMediaItem(item.build())
         val saved = history.get(w.key)
-        val resumeAt = saved?.takeIf { !it.finished && it.position > 30_000 }?.position ?: 0L
+        val resumeAt = saved?.takeIf { !it.finished && it.position > 10_000 }?.position ?: 0L
         if (resumeAt > 0) p.seekTo(resumeAt)
         p.prepare()
         p.playWhenReady = true
+        subtitleText.text = ""
+        subtitleText.visibility = View.GONE
+        // Appears in "Seguir viendo" right away, not only after some minutes.
+        history.update(w, resumeAt, saved?.duration ?: 0L)
         if (resumeAt > 0) Toast.makeText(this, "Continuando desde ${clock(resumeAt)}", Toast.LENGTH_LONG).show()
         root.requestFocus()
         showVodBar()
@@ -543,7 +588,7 @@ class MainActivity : Activity() {
         val p = player ?: return
         val pos = p.currentPosition
         val dur = p.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
-        if (pos > 5_000) history.update(w, pos, dur)
+        history.update(w, pos.coerceAtLeast(0), dur)
     }
 
     private fun vodEnded() {
@@ -568,6 +613,7 @@ class MainActivity : Activity() {
         vod = null
         stopPlayback()
         hideVodBar()
+        subtitleText.visibility = View.GONE
         browser.visibility = View.VISIBLE
         browser.alpha = 0f
         browser.animate().alpha(1f).setDuration(200).start()
@@ -575,6 +621,9 @@ class MainActivity : Activity() {
         rowAdapter.notifyDataSetChanged()
         if (seriesView.visibility == View.VISIBLE) {
             episodeAdapter.notifyDataSetChanged()
+            val lastId = history.continueWatching(true).firstOrNull { it.seriesId == openSeries?.id }?.id
+            val lastSeason = episodes.firstOrNull { it.id == lastId }?.season
+            if (lastSeason != null && lastSeason != selectedSeason) selectSeason(lastSeason, lastId)
             episodeList.requestFocus()
         } else {
             grid.requestFocus()
@@ -588,7 +637,12 @@ class MainActivity : Activity() {
         showVodBar()
     }
 
-    private val hideVodBarTask = Runnable { if (player?.isPlaying == true) vodBar.visibility = View.GONE }
+    private val hideVodBarTask = Runnable {
+        if (player?.isPlaying == true && pickerBox.visibility != View.VISIBLE) {
+            vodBar.visibility = View.GONE
+            root.requestFocus()
+        }
+    }
     private val vodBarUpdater = object : Runnable {
         override fun run() {
             if (vodBar.visibility == View.VISIBLE) {
@@ -598,8 +652,9 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showVodBar() {
+    private fun showVodBar(focusControls: Boolean = false) {
         val w = vod ?: return
+        if (focusControls) btnPlay.post { btnPlay.requestFocus() }
         vodTitle.text = w.title
         vodSub.text = w.subtitle
         vodSub.visibility = if (w.subtitle.isEmpty()) View.GONE else View.VISIBLE
@@ -613,6 +668,7 @@ class MainActivity : Activity() {
 
     private fun hideVodBar() {
         vodBar.visibility = View.GONE
+        if (vodBar.hasFocus()) root.requestFocus()
         main.removeCallbacks(vodBarUpdater)
     }
 
@@ -623,6 +679,7 @@ class MainActivity : Activity() {
         vodProgress.progress = if (dur > 0) (pos * 1000 / dur).toInt() else 0
         val state = if (!p.playWhenReady) "Pausa   ·   " else ""
         vodTime.text = state + clock(pos) + (if (dur > 0) " / " + clock(dur) else "")
+        btnPlay.text = if (p.playWhenReady) "❚❚  Pausa" else "▶  Reproducir"
         if (!p.playWhenReady) {
             vodBar.visibility = View.VISIBLE
             main.removeCallbacks(hideVodBarTask)
@@ -832,33 +889,58 @@ class MainActivity : Activity() {
         grid.animate().alpha(1f).setDuration(200).start()
     }
 
-    /** "Seguir viendo": up to 5 posters plus a "Ver todo" tile. */
+    /** Top section: "Seguir viendo" or "Ver más tarde", up to 5 posters plus "Ver todo". */
     private fun refreshContinue() {
         measureTiles()
-        val entries = history.continueWatching(browserSeries)
+        val cont = history.continueWatching(browserSeries)
+        val saved = later.list(browserSeries)
         continueRow.removeAllViews()
-        if (entries.isEmpty()) {
+        if (cont.isEmpty() && saved.isEmpty()) {
             continueBox.visibility = View.GONE
             return
         }
+        if (topMode == 0 && cont.isEmpty()) topMode = 1
+        if (topMode == 1 && saved.isEmpty()) topMode = 0
         continueBox.visibility = View.VISIBLE
-        entries.take(5).forEach { w ->
+        topToggleContinue.visibility = if (cont.isEmpty()) View.GONE else View.VISIBLE
+        topToggleLater.visibility = if (saved.isEmpty()) View.GONE else View.VISIBLE
+        listOf(topToggleContinue to 0, topToggleLater to 1).forEach { (t, mode) ->
+            val active = mode == topMode
+            t.background = focusBg(16, if (active) 0xFF3B5BA8.toInt() else 0x22FFFFFF)
+            t.setTextColor(if (active) Color.WHITE else MUTED)
+        }
+        val entries: List<Any> = if (topMode == 0) cont else saved
+        entries.take(5).forEach { item ->
             val tile = makeTile()
-            bindTile(tile, w)
-            tile.setOnClickListener { onItem(w) }
+            bindTile(tile, item)
+            tile.setOnClickListener { onItem(item) }
+            tile.setOnLongClickListener { itemMenu(item); true }
             continueRow.addView(tile, LinearLayout.LayoutParams(tileW, -2))
         }
         val all = makeTile()
         bindMore(all, entries.size)
-        all.setOnClickListener { showAllContinue() }
+        all.setOnClickListener { showAllTop() }
         continueRow.addView(all, LinearLayout.LayoutParams(tileW, -2))
     }
 
-    private fun showAllContinue() {
+    private fun switchTop(mode: Int) {
+        if (topMode == mode) return
+        topMode = mode
+        refreshContinue()
+        continueRow.alpha = 0.3f
+        continueRow.animate().alpha(1f).setDuration(200).start()
+    }
+
+    private fun showAllTop() {
         closeSearch(restore = false)
-        gridMode = MODE_CONTINUE
+        if (topMode == 0) {
+            gridMode = MODE_CONTINUE
+            setItems(history.continueWatching(browserSeries), "Seguir viendo · todo")
+        } else {
+            gridMode = MODE_LATER
+            setItems(later.list(browserSeries), "Ver más tarde · todo")
+        }
         markChips()
-        setItems(history.continueWatching(browserSeries), "Seguir viendo · todo")
         gridStatus(null)
         grid.post { grid.setSelectionFromTop(grid.headerViewsCount, 0) }
     }
@@ -891,6 +973,8 @@ class MainActivity : Activity() {
     private fun openSeriesView(series: VodItem) {
         openSeries = series
         episodes = emptyList()
+        seasonEpisodes = emptyList()
+        seasonRow.removeAllViews()
         episodeAdapter.notifyDataSetChanged()
         logos.load(series.poster, seriesPoster)
         seriesTitle.text = series.title
@@ -910,6 +994,47 @@ class MainActivity : Activity() {
         episodes = emptyList()
     }
 
+    /** Season chips "T1  T2  T3…" above the episode list. */
+    private fun buildSeasons(focusEpisodeId: String?) {
+        seasonRow.removeAllViews()
+        val seasons = episodes.map { it.season }.distinct()
+        seasons.forEach { n ->
+            seasonRow.addView(text(17f, bold = true).apply {
+                this.text = if (n > 0) "T$n" else "Extras"
+                tag = n
+                gravity = Gravity.CENTER
+                minWidth = dp(64)
+                setPadding(dp(14), dp(7), dp(14), dp(7))
+                isFocusable = true
+                isClickable = true
+                setOnClickListener { selectSeason(n, null) }
+            }, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
+        }
+        seasonScroll.visibility = if (seasons.size > 1) View.VISIBLE else View.GONE
+        val start = episodes.firstOrNull { it.id == focusEpisodeId }?.season
+            ?: episodes.firstOrNull { e -> history.get("e:" + e.id)?.let { !it.finished } == true }?.season
+            ?: seasons.firstOrNull() ?: -1
+        selectSeason(start, focusEpisodeId)
+    }
+
+    private fun selectSeason(n: Int, focusEpisodeId: String?) {
+        selectedSeason = n
+        seasonEpisodes = episodes.filter { it.season == n }
+        for (i in 0 until seasonRow.childCount) {
+            val chip = seasonRow.getChildAt(i) as TextView
+            val active = chip.tag == n
+            chip.background = focusBg(16, if (active) 0xFF3B5BA8.toInt() else 0x22FFFFFF)
+            chip.setTextColor(if (active) Color.WHITE else MUTED)
+            if (active) seasonScroll.post { seasonScroll.smoothScrollTo((chip.left - dp(40)).coerceAtLeast(0), 0) }
+        }
+        episodeAdapter.notifyDataSetChanged()
+        episodeList.alpha = 0.3f
+        episodeList.animate().alpha(1f).setDuration(180).start()
+        val idx = seasonEpisodes.indexOfFirst { it.id == focusEpisodeId }.takeIf { it >= 0 }
+            ?: seasonEpisodes.indexOfFirst { e -> history.get("e:" + e.id)?.let { !it.finished } == true }
+        episodeList.setSelection(idx.coerceAtLeast(0))
+    }
+
     private fun loadEpisodes(series: VodItem, playAfter: Watch?) {
         val acc = xtream() ?: return
         val token = ++loadToken
@@ -924,23 +1049,20 @@ class MainActivity : Activity() {
                     // From "Seguir viendo": keep the series so "next episode" works.
                     openSeries = series
                     episodes = result.getOrDefault(emptyList())
-                    episodeAdapter.notifyDataSetChanged()
                     logos.load(series.poster, seriesPoster)
                     seriesTitle.text = series.title
                     seriesInfo.text = "${episodes.size} episodios"
                     seriesView.visibility = View.VISIBLE
-                    episodes.indexOfFirst { it.id == playAfter.id }.takeIf { it >= 0 }?.let { episodeList.setSelection(it) }
+                    buildSeasons(playAfter.id)
                     playVod(playAfter)
                     return@post
                 }
                 result.onSuccess {
                     episodes = it
-                    episodeAdapter.notifyDataSetChanged()
                     val seasons = it.map { e -> e.season }.distinct().size
                     seriesInfo.text = if (it.isEmpty()) "Esta serie no tiene episodios."
                     else "$seasons temporada${if (seasons == 1) "" else "s"}  ·  ${it.size} episodios"
-                    val resumeIdx = it.indexOfFirst { e -> history.get("e:" + e.id)?.let { w -> !w.finished } == true }
-                    episodeList.setSelection(resumeIdx.coerceAtLeast(0))
+                    buildSeasons(null)
                     episodeList.requestFocus()
                 }.onFailure { seriesInfo.text = "No se pudo cargar: ${it.message}" }
             }
@@ -957,7 +1079,7 @@ class MainActivity : Activity() {
                 grid.requestFocus()
             }
             gridMode == MODE_SEARCH || browserSearch.visibility == View.VISIBLE -> closeSearch(restore = true)
-            gridMode == MODE_CONTINUE -> selectCategory(selectedCat[browserSeries] ?: defaultCategory())
+            gridMode == MODE_CONTINUE || gridMode == MODE_LATER -> selectCategory(selectedCat[browserSeries] ?: defaultCategory())
             else -> {
                 loadToken++
                 closeBrowser()
@@ -1111,7 +1233,7 @@ class MainActivity : Activity() {
     }
 
     private fun overlayOpen() = setup.visibility == View.VISIBLE || account.visibility == View.VISIBLE ||
-        browser.visibility == View.VISIBLE || filterBox.visibility == View.VISIBLE
+        browser.visibility == View.VISIBLE || filterBox.visibility == View.VISIBLE || pickerBox.visibility == View.VISIBLE
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (overlayOpen() || panel.visibility == View.VISIBLE) return super.onKeyDown(keyCode, event)
@@ -1133,19 +1255,125 @@ class MainActivity : Activity() {
         val step = when {
             event.repeatCount > 15 -> 60_000L
             event.repeatCount > 3 -> 30_000L
-            else -> 10_000L
+            else -> 15_000L
         }
         when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                if (vodBar.visibility == View.VISIBLE) showVodBar(true) else { togglePause(); showVodBar(true) }
+            }
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE -> togglePause()
             KeyEvent.KEYCODE_MEDIA_PLAY -> { p.playWhenReady = true; showVodBar() }
             KeyEvent.KEYCODE_MEDIA_PAUSE -> { p.playWhenReady = false; saveVodProgress(); showVodBar() }
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> seekBy(-step)
             KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> seekBy(step)
-            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_MENU -> showVodBar()
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_MENU -> showVodBar(true)
             else -> return super.onKeyDown(keyCode, event)
         }
         return true
+    }
+
+    // ---------------------------------------------------------------- audio, subtitles, aspect
+
+    private fun trackLabel(f: Format, n: Int): String {
+        val lang = f.language?.takeIf { it.isNotBlank() && it != "und" }?.let { code ->
+            Locale(code).getDisplayLanguage(Locale("es")).replaceFirstChar { it.uppercase() }
+        }
+        val parts = listOfNotNull(
+            f.label?.takeIf { it.isNotBlank() },
+            lang,
+            if (f.channelCount > 0) when (f.channelCount) { 1 -> "mono"; 2 -> "estéreo"; 6 -> "5.1"; 8 -> "7.1"; else -> "${f.channelCount} canales" } else null,
+        ).distinct()
+        return parts.joinToString(" · ").ifEmpty { "Pista $n" }
+    }
+
+    private fun chooseTrack(type: Int) {
+        val p = player ?: return
+        val groups = p.currentTracks.groups.filter { it.type == type && it.isSupported }
+        val choices = ArrayList<Pair<Tracks.Group, Int>>()
+        groups.forEach { g -> for (i in 0 until g.length) if (g.isTrackSupported(i)) choices.add(g to i) }
+        val textType = type == C.TRACK_TYPE_TEXT
+        if (choices.isEmpty()) {
+            Toast.makeText(this, if (textType) "Este contenido no trae subtítulos." else "Solo hay una pista de audio.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val labels = ArrayList<String>()
+        if (textType) labels.add("Desactivados")
+        choices.forEachIndexed { n, (g, i) -> labels.add(trackLabel(g.getTrackFormat(i), n + 1)) }
+        val disabled = p.trackSelectionParameters.disabledTrackTypes.contains(type)
+        var selected = choices.indexOfFirst { (g, i) -> g.isTrackSelected(i) }
+        if (textType) selected = if (disabled || selected < 0) 0 else selected + 1
+        showPicker(if (textType) "Subtítulos" else "Audio", labels, selected) { pick ->
+            val params = p.trackSelectionParameters.buildUpon()
+            if (textType && pick == 0) {
+                params.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            } else {
+                val (g, i) = choices[if (textType) pick - 1 else pick]
+                params.setTrackTypeDisabled(type, false)
+                params.setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
+            }
+            p.trackSelectionParameters = params.build()
+        }
+    }
+
+    private fun chooseAspect() {
+        showPicker("Relación de aspecto", listOf("Normal", "16:9", "4:3"), aspectMode) {
+            aspectMode = it
+            fitVideo()
+        }
+    }
+
+    // ---------------------------------------------------------------- picker
+
+    private fun showPicker(title: String, options: List<String>, selected: Int, action: (Int) -> Unit) {
+        pickerReturnFocus = currentFocus
+        pickerTitle.text = title
+        pickerOptions = options
+        pickerSelected = selected
+        pickerAction = action
+        pickerAdapter.notifyDataSetChanged()
+        main.removeCallbacks(hideVodBarTask)
+        pickerBox.alpha = 0f
+        pickerBox.visibility = View.VISIBLE
+        pickerBox.animate().alpha(1f).setDuration(160).start()
+        pickerList.requestFocus()
+        pickerList.setSelection(selected.coerceAtLeast(0))
+    }
+
+    private fun closePicker() {
+        pickerBox.visibility = View.GONE
+        pickerAction = null
+        val back = pickerReturnFocus
+        if (back != null && back.isShown) back.requestFocus() else root.requestFocus()
+        if (vod != null) showVodBar()
+    }
+
+    // ---------------------------------------------------------------- long press menu
+
+    private fun itemMenu(item: Any) {
+        when (item) {
+            is VodItem -> {
+                val inLater = later.contains(item)
+                val open = if (item.series) "Abrir serie" else "Reproducir"
+                showPicker(item.title, listOf(open, if (inLater) "Quitar de Ver más tarde" else "Agregar a Ver más tarde"), -1) { pick ->
+                    if (pick == 0) onItem(item)
+                    else {
+                        if (inLater) later.remove(item) else later.add(item)
+                        Toast.makeText(this, if (inLater) "Quitado de Ver más tarde" else "Agregado a Ver más tarde", Toast.LENGTH_SHORT).show()
+                        if (!inLater) topMode = 1
+                        refreshContinue()
+                        if (gridMode == MODE_LATER) setItems(later.list(browserSeries), "Ver más tarde · todo")
+                    }
+                }
+            }
+            is Watch -> showPicker(item.title, listOf("Continuar", "Quitar de Seguir viendo"), -1) { pick ->
+                if (pick == 0) onItem(item)
+                else {
+                    history.remove(item)
+                    refreshContinue()
+                    if (gridMode == MODE_CONTINUE) setItems(history.continueWatching(browserSeries), "Seguir viendo · todo")
+                }
+            }
+        }
     }
 
     private fun togglePause() {
@@ -1157,6 +1385,7 @@ class MainActivity : Activity() {
 
     private fun onBack() {
         when {
+            pickerBox.visibility == View.VISIBLE -> closePicker()
             filterBox.visibility == View.VISIBLE -> closeFilter()
             account.visibility == View.VISIBLE -> {
                 account.visibility = View.GONE
@@ -1323,7 +1552,7 @@ class MainActivity : Activity() {
         when {
             overlayOpen() -> {}
             panel.visibility == View.VISIBLE -> hidePanel()
-            vod != null -> if (vodBar.visibility == View.VISIBLE) togglePause() else showVodBar()
+            vod != null -> if (vodBar.visibility == View.VISIBLE) hideVodBar() else showVodBar()
             info.visibility == View.VISIBLE && menuButton.visibility == View.VISIBLE -> hideInfo.run()
             else -> showInfo(true)
         }
@@ -1628,10 +1857,47 @@ class MainActivity : Activity() {
         vodBar.addView(vodTitle)
         vodBar.addView(vodSub)
         vodBar.addView(vodProgress, LinearLayout.LayoutParams(-1, dp(8)).apply { topMargin = dp(8); bottomMargin = dp(6) })
-        val timeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        timeRow.addView(vodTime, LinearLayout.LayoutParams(0, -2, 1f))
-        timeRow.addView(text(14f, HINT).apply { this.text = "OK pausa  ·  ◀ ▶ retrocede/adelanta  ·  Atrás vuelve" })
-        vodBar.addView(timeRow)
+        vodBar.isClickable = true
+        vodBar.addView(vodTime)
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        fun control(label: String, action: () -> Unit) = text(16f, bold = true).apply {
+            this.text = label
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            background = focusBg(18, 0x22FFFFFF)
+            isFocusable = true
+            isClickable = true
+            setOnClickListener {
+                action()
+                if (vod != null) showVodBar()
+            }
+        }
+        btnPlay = control("❚❚  Pausa") { togglePause() }
+        vodControls = listOf(
+            control("−15 s") { seekBy(-15_000) },
+            btnPlay,
+            control("+15 s") { seekBy(15_000) },
+            control("Audio") { chooseTrack(C.TRACK_TYPE_AUDIO) },
+            control("Subtítulos") { chooseTrack(C.TRACK_TYPE_TEXT) },
+            control("Aspecto") { chooseAspect() },
+        )
+        vodControls.forEach { controls.addView(it, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) }) }
+        vodBar.addView(controls, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+
+        subtitleText = text(24f).apply {
+            maxLines = 4
+            gravity = Gravity.CENTER
+            setShadowLayer(6f, 0f, 2f, Color.BLACK)
+            setPadding(dp(10), dp(2), dp(10), dp(2))
+            setBackgroundColor(0x66000000)
+            visibility = View.GONE
+        }
+        root.addView(subtitleText, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin = dp(48); leftMargin = dp(60); rightMargin = dp(60)
+        })
         root.addView(vodBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
             leftMargin = dp(40); rightMargin = dp(40); bottomMargin = dp(28)
         })
@@ -1713,8 +1979,26 @@ class MainActivity : Activity() {
         }
         // Header 1: "Seguir viendo"
         continueBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        continueBox.addView(text(19f, bold = true).apply { this.text = "Seguir viendo" },
-            LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6); bottomMargin = dp(6) })
+        val topHead = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        topToggleContinue = text(17f, bold = true).apply {
+            this.text = "Seguir viendo"
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+            isFocusable = true
+            isClickable = true
+            setOnClickListener { switchTop(0) }
+            setOnFocusChangeListener { _, has -> if (has) switchTop(0) }
+        }
+        topToggleLater = text(17f, bold = true).apply {
+            this.text = "Ver más tarde"
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+            isFocusable = true
+            isClickable = true
+            setOnClickListener { switchTop(1) }
+            setOnFocusChangeListener { _, has -> if (has) switchTop(1) }
+        }
+        topHead.addView(topToggleContinue, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
+        topHead.addView(topToggleLater)
+        continueBox.addView(topHead, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(4); bottomMargin = dp(8) })
         continueRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         continueBox.addView(continueRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })
         grid.addHeaderView(continueBox, null, false)
@@ -1787,14 +2071,20 @@ class MainActivity : Activity() {
         seriesInfo = text(15f, MUTED).apply { maxLines = 3 }
         seriesLeft.addView(seriesInfo, LinearLayout.LayoutParams(dp(180), -2).apply { topMargin = dp(4) })
         seriesView.addView(seriesLeft, LinearLayout.LayoutParams(-2, -1).apply { rightMargin = dp(24) })
+        val seriesRight = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        seasonScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        seasonRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        seasonScroll.addView(seasonRow)
+        seriesRight.addView(seasonScroll, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         episodeList = styledList().apply {
             adapter = episodeAdapter
             setOnItemClickListener { _, _, position, _ ->
                 val s = openSeries ?: return@setOnItemClickListener
-                episodes.getOrNull(position)?.let { playVod(episodeWatch(s, it)) }
+                seasonEpisodes.getOrNull(position)?.let { playVod(episodeWatch(s, it)) }
             }
         }
-        seriesView.addView(episodeList, LinearLayout.LayoutParams(0, -1, 1f))
+        seriesRight.addView(episodeList, LinearLayout.LayoutParams(-1, 0, 1f))
+        seriesView.addView(seriesRight, LinearLayout.LayoutParams(0, -1, 1f))
         content.addView(seriesView, FrameLayout.LayoutParams(-1, -1))
         browser.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(browser, FrameLayout.LayoutParams(-1, -1))
@@ -1845,6 +2135,27 @@ class MainActivity : Activity() {
         root.addView(filterBox, FrameLayout.LayoutParams(dp(560), -1, Gravity.CENTER).apply {
             topMargin = dp(30); bottomMargin = dp(30)
         })
+
+        // Option picker (audio / subtitles / aspect / item menu)
+        pickerBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            setPadding(dp(20), dp(18), dp(20), dp(14))
+            background = box(0xF20A1E5A.toInt(), 16)
+            visibility = View.GONE
+        }
+        pickerTitle = text(21f, bold = true)
+        pickerBox.addView(pickerTitle, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        pickerList = styledList().apply {
+            adapter = pickerAdapter
+            setOnItemClickListener { _, _, position, _ ->
+                val action = pickerAction
+                closePicker()
+                action?.invoke(position)
+            }
+        }
+        pickerBox.addView(pickerList, LinearLayout.LayoutParams(-1, -2))
+        root.addView(pickerBox, FrameLayout.LayoutParams(dp(440), -2, Gravity.CENTER))
 
         // Playlist setup screen
         setup = LinearLayout(this).apply {
@@ -2014,13 +2325,14 @@ class MainActivity : Activity() {
                 val saved = if (item.series) null else history.get("m:" + item.id)
                 val sub = when {
                     saved?.finished == true -> "Vista"
+                    later.contains(item) -> listOf(item.year, "Ver más tarde").filter { it.isNotEmpty() }.joinToString(" · ")
                     else -> item.year
                 }
                 p.sub.text = sub
                 p.sub.visibility = if (sub.isEmpty()) View.GONE else View.VISIBLE
                 p.badge.text = item.rating.take(3)
                 p.badge.visibility = if (item.rating.isEmpty()) View.GONE else View.VISIBLE
-                val part = saved?.takeIf { !it.finished && it.duration > 0 && it.position > 30_000 }
+                val part = saved?.takeIf { !it.finished && it.duration > 0 && it.position > 0 }
                 p.bar.visibility = if (part == null) View.GONE else View.VISIBLE
                 if (part != null) p.bar.progress = (part.position * 1000 / part.duration).toInt()
             }
@@ -2074,10 +2386,12 @@ class MainActivity : Activity() {
                 if (item == null) {
                     tile.visibility = View.INVISIBLE
                     tile.setOnClickListener(null)
+                    tile.setOnLongClickListener(null)
                 } else {
                     tile.visibility = View.VISIBLE
                     bindTile(tile, item)
                     tile.setOnClickListener { onItem(item) }
+                    tile.setOnLongClickListener { itemMenu(item); true }
                 }
             }
             return row
@@ -2085,12 +2399,12 @@ class MainActivity : Activity() {
     }
 
     private inner class EpisodeAdapter : BaseAdapter() {
-        override fun getCount() = episodes.size
-        override fun getItem(position: Int): Any? = episodes.getOrNull(position)
+        override fun getCount() = seasonEpisodes.size
+        override fun getItem(position: Int): Any? = seasonEpisodes.getOrNull(position)
         override fun getItemId(position: Int) = position.toLong()
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
             val row = (convertView as? LinearLayout) ?: makeRow(96, 54)
-            val e = episodes[position]
+            val e = seasonEpisodes[position]
             val w = history.get("e:" + e.id)
             val sub = when {
                 w == null -> ""
@@ -2098,9 +2412,21 @@ class MainActivity : Activity() {
                 w.position > 30_000 -> "Quedaste en ${clock(w.position)}"
                 else -> ""
             }
-            val showSeason = position == 0 || episodes[position - 1].season != e.season
-            fillRow(row, e.number.toString(), e.image, (if (showSeason) "Temporada ${e.season} · " else "") + e.title, sub)
+            fillRow(row, e.number.toString(), e.image, e.title, sub)
             return row
+        }
+    }
+
+    private inner class PickerAdapter : BaseAdapter() {
+        override fun getCount() = pickerOptions.size
+        override fun getItem(position: Int): Any? = pickerOptions.getOrNull(position)
+        override fun getItemId(position: Int) = position.toLong()
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+            val tv = (convertView as? TextView) ?: text(19f).apply { setPadding(dp(12), dp(11), dp(12), dp(11)) }
+            val sel = position == pickerSelected
+            tv.text = (if (pickerSelected >= 0) (if (sel) "●   " else "○   ") else "") + pickerOptions[position]
+            tv.setTextColor(if (sel) ACCENT else Color.WHITE)
+            return tv
         }
     }
 
