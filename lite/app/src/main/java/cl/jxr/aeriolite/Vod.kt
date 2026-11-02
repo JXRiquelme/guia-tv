@@ -1,6 +1,10 @@
 package cl.jxr.aeriolite
 
 import android.content.SharedPreferences
+import android.util.JsonReader
+import android.util.JsonToken
+import java.io.InputStreamReader
+import java.text.Normalizer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -44,7 +48,16 @@ data class VodItem(
     val ext: String,
     val year: String,
     val rating: String,
-)
+    val categoryId: String = "",
+) {
+    /** Lowercase, accent-free title used by the search. */
+    val searchKey: String by lazy { Search.normalize(title) }
+}
+
+object Search {
+    private val marks = Regex("\\p{Mn}+")
+    fun normalize(s: String): String = marks.replace(Normalizer.normalize(s, Normalizer.Form.NFD), "").lowercase()
+}
 
 data class Episode(
     val id: String,
@@ -90,26 +103,63 @@ object Xtream {
         return out
     }
 
-    fun items(acc: XtreamAccount, series: Boolean, categoryId: String): List<VodItem> {
-        val text = fetch(acc.api(if (series) "get_series" else "get_vod_streams", "category_id" to categoryId))
-        val a = array(text)
-        val out = ArrayList<VodItem>(a.length())
-        for (i in 0 until a.length()) {
-            val o = a.optJSONObject(i) ?: continue
-            val id = o.s(if (series) "series_id" else "stream_id")
-            if (id.isEmpty()) continue
-            val date = if (series) o.s("releaseDate").ifEmpty { o.s("release_date") } else o.s("releasedate").ifEmpty { o.s("year") }
-            out.add(
-                VodItem(
-                    series = series,
-                    id = id,
-                    title = o.s("name").ifEmpty { "Sin título" },
-                    poster = if (series) o.s("cover") else o.s("stream_icon"),
-                    ext = o.s("container_extension").ifEmpty { "mp4" },
-                    year = Regex("(19|20)\\d\\d").find(date)?.value.orEmpty(),
-                    rating = o.s("rating").takeIf { it.isNotEmpty() && it != "0" && it != "0.0" }.orEmpty(),
-                )
-            )
+    private fun JsonReader.str(): String = when (peek()) {
+        JsonToken.NULL -> { nextNull(); "" }
+        JsonToken.STRING, JsonToken.NUMBER -> nextString().trim()
+        JsonToken.BOOLEAN -> nextBoolean().toString()
+        else -> { skipValue(); "" }
+    }
+
+    /**
+     * Movies or series of one category, or the whole catalog when [categoryId] is null.
+     * Streams the JSON so a large catalog does not have to fit in memory as text.
+     */
+    fun items(acc: XtreamAccount, series: Boolean, categoryId: String?): List<VodItem> {
+        val action = if (series) "get_series" else "get_vod_streams"
+        val url = if (categoryId == null) acc.api(action) else acc.api(action, "category_id" to categoryId)
+        val c = Net.open(url, 90_000)
+        val out = ArrayList<VodItem>()
+        try {
+            JsonReader(InputStreamReader(Net.stream(c), "UTF-8")).use { r ->
+                val first = try { r.peek() } catch (e: Exception) { throw IllegalStateException("El servidor no respondió") }
+                if (first != JsonToken.BEGIN_ARRAY) throw IllegalStateException("Usuario o clave Xtream incorrectos")
+                r.beginArray()
+                while (r.hasNext()) {
+                    if (r.peek() != JsonToken.BEGIN_OBJECT) { r.skipValue(); continue }
+                    var id = ""; var name = ""; var poster = ""; var ext = ""; var date = ""; var rating = ""; var cat = ""
+                    r.beginObject()
+                    while (r.hasNext()) {
+                        when (r.nextName()) {
+                            "stream_id" -> if (!series) id = r.str() else r.skipValue()
+                            "series_id" -> if (series) id = r.str() else r.skipValue()
+                            "name" -> name = r.str()
+                            "stream_icon", "cover" -> { val v = r.str(); if (poster.isEmpty()) poster = v }
+                            "container_extension" -> ext = r.str()
+                            "releasedate", "releaseDate", "release_date", "year" -> { val v = r.str(); if (date.isEmpty()) date = v }
+                            "rating" -> rating = r.str()
+                            "category_id" -> cat = r.str()
+                            else -> r.skipValue()
+                        }
+                    }
+                    r.endObject()
+                    if (id.isEmpty()) continue
+                    out.add(
+                        VodItem(
+                            series = series,
+                            id = id,
+                            title = name.ifEmpty { "Sin título" },
+                            poster = poster,
+                            ext = ext.ifEmpty { "mp4" },
+                            year = Regex("(19|20)\\d\\d").find(date)?.value.orEmpty(),
+                            rating = rating.takeIf { it.isNotEmpty() && it != "0" && it != "0.0" }.orEmpty(),
+                            categoryId = cat,
+                        )
+                    )
+                }
+                r.endArray()
+            }
+        } finally {
+            c.disconnect()
         }
         return out
     }

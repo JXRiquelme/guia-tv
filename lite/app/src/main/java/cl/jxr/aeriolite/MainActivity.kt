@@ -6,22 +6,28 @@ import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
+import android.text.TextWatcher
 import android.util.TypedValue
-import android.view.GestureDetector
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceView
+import android.view.VelocityTracker
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -49,6 +55,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import kotlin.math.abs
 
 class MainActivity : Activity() {
 
@@ -58,10 +65,14 @@ class MainActivity : Activity() {
         const val DEFAULT_SERVER = "https://reborned.cc:8443"
         const val GUIDE_MAX_AGE = 3 * 3600_000L
 
-        // Extra rows of the channel panel
-        const val ROW_MOVIES = 0
-        const val ROW_SERIES = 1
-        const val CH_OFFSET = 2
+        const val TAB_LIVE = 0
+        const val TAB_MOVIES = 1
+        const val TAB_SERIES = 2
+
+        const val ACCENT = 0xFF7FD3FF.toInt()
+        const val MUTED = 0xFFB8C7F0.toInt()
+        const val HINT = 0xFF8FA0CC.toInt()
+        const val BLUE = 0xFF2F6FEB.toInt()
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -85,7 +96,13 @@ class MainActivity : Activity() {
     /** Non-null while a movie or episode is playing. */
     private var vod: Watch? = null
 
-    // Views
+    // Hidden channels (by name) and hidden categories (by id) for movies / series.
+    private lateinit var hiddenChannels: MutableSet<String>
+    private lateinit var hiddenMovieCats: MutableSet<String>
+    private lateinit var hiddenSeriesCats: MutableSet<String>
+    private fun hiddenCats(series: Boolean) = if (series) hiddenSeriesCats else hiddenMovieCats
+
+    // Live views
     private lateinit var root: FrameLayout
     private lateinit var surface: SurfaceView
     private lateinit var status: TextView
@@ -95,10 +112,23 @@ class MainActivity : Activity() {
     private lateinit var infoNow: TextView
     private lateinit var infoNext: TextView
     private lateinit var infoProgress: ProgressBar
-    private lateinit var panel: LinearLayout
-    private lateinit var panelClock: TextView
-    private lateinit var list: ListView
+    private lateinit var menuButton: TextView
+    private lateinit var card: LinearLayout
+    private lateinit var cardLogo: ImageView
+    private lateinit var cardName: TextView
+    private lateinit var cardNow: TextView
     private lateinit var numberView: TextView
+
+    // Channel panel
+    private lateinit var panel: LinearLayout
+    private lateinit var panelTabs: List<TextView>
+    private lateinit var panelSearch: EditText
+    private lateinit var list: ListView
+    private val adapter = ChannelAdapter()
+    private var shown: List<Int> = emptyList()
+    private var channelQuery = ""
+
+    // Setup screens
     private lateinit var setup: LinearLayout
     private lateinit var setupInput: EditText
     private lateinit var setupMessage: TextView
@@ -107,16 +137,19 @@ class MainActivity : Activity() {
     private lateinit var accUser: EditText
     private lateinit var accPass: EditText
     private lateinit var accMessage: TextView
+
+    // Movie bar
     private lateinit var vodBar: LinearLayout
     private lateinit var vodTitle: TextView
     private lateinit var vodSub: TextView
     private lateinit var vodProgress: ProgressBar
     private lateinit var vodTime: TextView
-    private val adapter = ChannelAdapter()
 
     // Movies / series browser
     private lateinit var browser: LinearLayout
-    private lateinit var browserTitle: TextView
+    private lateinit var browserTabs: List<TextView>
+    private lateinit var browserSub: TextView
+    private lateinit var browserSearch: EditText
     private lateinit var catList: ListView
     private lateinit var itemList: ListView
     private lateinit var browserMessage: TextView
@@ -126,14 +159,30 @@ class MainActivity : Activity() {
     private var pendingSeries = false
     private val categoryCache = HashMap<Boolean, List<Category>>()
     private val itemCache = HashMap<String, List<VodItem>>()
+    private val catalogCache = HashMap<Boolean, List<VodItem>>()
     private var cats: List<Category> = emptyList()
+    private var visibleCats: List<Category> = emptyList()
     private var hasContinueRow = false
     private var rows: List<Any> = emptyList()
+    private var rowsLabel = ""
     private var openSeries: VodItem? = null
     private var seriesBackRows: List<Any> = emptyList()
+    private var seriesBackLabel = ""
     private var seriesBackSelection = 0
     private var episodes: List<Episode> = emptyList()
     private var loadToken = 0
+    private var searchActive = false
+    private var rowsBeforeSearch: List<Any> = emptyList()
+    private var labelBeforeSearch = ""
+
+    // Hide-categories dialog
+    private lateinit var filterBox: LinearLayout
+    private lateinit var filterTitle: TextView
+    private lateinit var filterList: ListView
+    private val filterAdapter = FilterAdapter()
+    private var filterEntries: List<Pair<String, String>> = emptyList()
+    private var filterHidden: MutableSet<String> = HashSet()
+    private var filterKey = ""
 
     private val hm = SimpleDateFormat("HH:mm", Locale.getDefault())
 
@@ -145,6 +194,9 @@ class MainActivity : Activity() {
         prefs = getSharedPreferences("lite", Context.MODE_PRIVATE)
         logos = Logos(this)
         history = History(prefs)
+        hiddenChannels = HashSet(prefs.getStringSet("hide_ch", emptySet()) ?: emptySet())
+        hiddenMovieCats = HashSet(prefs.getStringSet("hide_vod", emptySet()) ?: emptySet())
+        hiddenSeriesCats = HashSet(prefs.getStringSet("hide_series", emptySet()) ?: emptySet())
         buildUi()
         val url = prefs.getString("list", "").orEmpty()
         if (url.isEmpty()) showSetup(null) else start()
@@ -177,10 +229,7 @@ class MainActivity : Activity() {
     private val ticker = object : Runnable {
         override fun run() {
             if (info.visibility == View.VISIBLE) updateInfo()
-            if (panel.visibility == View.VISIBLE) {
-                panelClock.text = hm.format(Date())
-                adapter.notifyDataSetChanged()
-            }
+            if (panel.visibility == View.VISIBLE) adapter.notifyDataSetChanged()
             val g = File(filesDir, "guia.xml")
             if (channels.isNotEmpty() && System.currentTimeMillis() - g.lastModified() > GUIDE_MAX_AGE) refreshGuide(true)
             main.postDelayed(this, 30_000)
@@ -214,8 +263,17 @@ class MainActivity : Activity() {
 
     private fun setChannels(newList: List<Channel>) {
         channels = newList
-        adapter.notifyDataSetChanged()
+        rebuildShown()
         refreshGuide(false)
+    }
+
+    /** Channels in the side list: not hidden and matching the search box. */
+    private fun rebuildShown() {
+        val q = Search.normalize(channelQuery.trim())
+        shown = channels.indices.filter { i ->
+            channels[i].name !in hiddenChannels && (q.isEmpty() || Search.normalize(channels[i].name).contains(q))
+        }
+        adapter.notifyDataSetChanged()
     }
 
     private fun refreshList(silent: Boolean) {
@@ -241,14 +299,15 @@ class MainActivity : Activity() {
                 if (result == channels) return@post
                 val playing = channels.getOrNull(current)
                 setChannels(result)
+                val canPlay = vod == null && browser.visibility != View.VISIBLE
                 if (playing == null) {
                     hideStatus()
-                    if (vod == null && browser.visibility != View.VISIBLE) play(startIndex()) else current = startIndex()
+                    if (canPlay) play(startIndex()) else current = startIndex()
                 } else {
                     val same = result.indexOfFirst { it.url == playing.url }
                         .takeIf { it >= 0 } ?: result.indexOfFirst { it.name == playing.name }
                     if (same >= 0) current = same
-                    else if (vod == null && browser.visibility != View.VISIBLE) play(startIndex())
+                    else if (canPlay) play(startIndex())
                     else current = startIndex()
                 }
             }
@@ -301,17 +360,16 @@ class MainActivity : Activity() {
         val p = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(http, extractors))
             .setLoadControl(load)
-            .setSeekBackIncrementMs(10_000)
-            .setSeekForwardIncrementMs(10_000)
             .build()
         p.setVideoSurfaceView(surface)
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
-                    Player.STATE_BUFFERING -> showStatus("Cargando…")
+                    Player.STATE_BUFFERING -> if (card.visibility != View.VISIBLE) showStatus("Cargando…")
                     Player.STATE_READY -> {
                         retries = 0
                         hideStatus()
+                        fadeCard()
                     }
                     Player.STATE_ENDED -> if (vod != null) vodEnded() else retry()
                     else -> {}
@@ -327,6 +385,7 @@ class MainActivity : Activity() {
                     player?.seekToDefaultPosition()
                     player?.prepare()
                 } else {
+                    fadeCard()
                     retry()
                 }
             }
@@ -358,7 +417,7 @@ class MainActivity : Activity() {
         p.setMediaItem(item.build())
         p.prepare()
         p.playWhenReady = true
-        showInfo()
+        showInfo(false)
     }
 
     private fun retry() {
@@ -392,9 +451,17 @@ class MainActivity : Activity() {
         hideStatus()
     }
 
+    /** Next visible channel in [step] direction (hidden channels are skipped). */
+    private fun neighbor(step: Int): Int {
+        val order = channels.indices.filter { channels[it].name !in hiddenChannels }.ifEmpty { channels.indices.toList() }
+        val pos = order.indexOf(current)
+        if (pos < 0) return order.firstOrNull { it > current } ?: order.first()
+        return order[(pos + step + order.size) % order.size]
+    }
+
     private fun zap(step: Int) {
         if (channels.isEmpty()) return
-        play((current + step + channels.size) % channels.size)
+        play(neighbor(step))
     }
 
     private fun fitVideo() {
@@ -429,9 +496,10 @@ class MainActivity : Activity() {
     private fun playVod(w: Watch) {
         val acc = xtream() ?: return
         saveVodProgress()
+        hideKeyboard()
         browser.visibility = View.GONE
         panel.visibility = View.GONE
-        info.visibility = View.GONE
+        hideInfo.run()
         vod = w
         retries = 0
         val url = if (w.episode) acc.episodeUrl(w.id, w.ext) else acc.movieUrl(w.id, w.ext)
@@ -440,11 +508,11 @@ class MainActivity : Activity() {
         val p = ensurePlayer()
         p.setMediaItem(item.build())
         val saved = history.get(w.key)
-        val resume = saved != null && !saved.finished && saved.position > 30_000
-        if (resume) p.seekTo(saved!!.position)
+        val resumeAt = saved?.takeIf { !it.finished && it.position > 30_000 }?.position ?: 0L
+        if (resumeAt > 0) p.seekTo(resumeAt)
         p.prepare()
         p.playWhenReady = true
-        if (resume) Toast.makeText(this, "Continuando desde ${clock(saved!!.position)}", Toast.LENGTH_LONG).show()
+        if (resumeAt > 0) Toast.makeText(this, "Continuando desde ${clock(resumeAt)}", Toast.LENGTH_LONG).show()
         root.requestFocus()
         showVodBar()
         main.removeCallbacks(vodSaver)
@@ -553,6 +621,26 @@ class MainActivity : Activity() {
         return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%02d:%02d".format(m, sec)
     }
 
+    // ---------------------------------------------------------------- tabs
+
+    private fun onTab(tab: Int) {
+        when (tab) {
+            TAB_LIVE -> {
+                if (browser.visibility == View.VISIBLE) closeBrowser()
+                showPanel()
+            }
+            TAB_MOVIES -> openBrowser(false)
+            TAB_SERIES -> openBrowser(true)
+        }
+    }
+
+    private fun markTabs(tabs: List<TextView>, active: Int) {
+        tabs.forEachIndexed { i, t ->
+            t.setTextColor(if (i == active) ACCENT else Color.WHITE)
+            t.typeface = if (i == active) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        }
+    }
+
     // ---------------------------------------------------------------- movies & series browser
 
     private fun openBrowser(series: Boolean) {
@@ -561,31 +649,39 @@ class MainActivity : Activity() {
             showAccount(null)
             return
         }
+        hideKeyboard()
         panel.visibility = View.GONE
-        info.visibility = View.GONE
+        hideInfo.run()
         stopPlayback()
         if (browserSeries != series || cats.isEmpty()) {
             browserSeries = series
             openSeries = null
             rows = emptyList()
+            rowsLabel = ""
             cats = emptyList()
+            visibleCats = emptyList()
+            closeSearch(restore = false)
         }
         showBrowser()
         if (cats.isEmpty()) loadCategories() else catList.requestFocus()
     }
 
     private fun showBrowser() {
-        browserTitle.text = when {
-            openSeries != null -> "Series  ›  ${openSeries!!.title}"
-            browserSeries -> "Series"
-            else -> "Películas"
+        markTabs(browserTabs, if (browserSeries) TAB_SERIES else TAB_MOVIES)
+        val base = if (browserSeries) "Series" else "Películas"
+        browserSub.text = when {
+            openSeries != null -> "$base  ›  ${openSeries!!.title}"
+            rowsLabel.isNotEmpty() -> "$base  ›  $rowsLabel"
+            else -> base
         }
         hasContinueRow = history.continueWatching(browserSeries).isNotEmpty()
+        visibleCats = cats.filter { it.id !in hiddenCats(browserSeries) }
         catAdapter.notifyDataSetChanged()
         browser.visibility = View.VISIBLE
     }
 
     private fun closeBrowser() {
+        hideKeyboard()
         browser.visibility = View.GONE
         browserMessage.visibility = View.GONE
         root.requestFocus()
@@ -597,13 +693,14 @@ class MainActivity : Activity() {
         browserMessage.visibility = if (text == null) View.GONE else View.VISIBLE
     }
 
-    private fun loadCategories() {
+    private fun loadCategories(then: (() -> Unit)? = null) {
         val acc = xtream() ?: return
         val series = browserSeries
         categoryCache[series]?.let {
             cats = it
-            catAdapter.notifyDataSetChanged()
+            showBrowser()
             catList.requestFocus()
+            then?.invoke()
             return
         }
         val token = ++loadToken
@@ -616,10 +713,11 @@ class MainActivity : Activity() {
                 result.onSuccess {
                     categoryCache[series] = it
                     cats = it
-                    catAdapter.notifyDataSetChanged()
+                    showBrowser()
                     browserStatus(if (it.isEmpty()) "El proveedor no tiene categorías aquí." else "Elige una categoría.")
                     catList.requestFocus()
                     catList.setSelection(0)
+                    then?.invoke()
                 }.onFailure {
                     browserStatus("No se pudo cargar: ${it.message}\nOK en una categoría para reintentar.")
                 }
@@ -629,8 +727,9 @@ class MainActivity : Activity() {
 
     private fun onCategory(position: Int) {
         openSeries = null
+        closeSearch(restore = false)
         if (hasContinueRow && position == 0) {
-            setRows(history.continueWatching(browserSeries))
+            setRows(history.continueWatching(browserSeries), "Seguir viendo")
             browserStatus(null)
             showBrowser()
             itemList.requestFocus()
@@ -640,19 +739,20 @@ class MainActivity : Activity() {
             loadCategories()
             return
         }
-        val cat = cats.getOrNull(position - if (hasContinueRow) 1 else 0) ?: return
+        val cat = visibleCats.getOrNull(position - if (hasContinueRow) 1 else 0) ?: return
         val acc = xtream() ?: return
         val series = browserSeries
         val key = "$series:${cat.id}"
-        showBrowser()
         itemCache[key]?.let {
-            setRows(it)
+            setRows(it, cat.name)
+            showBrowser()
             browserStatus(if (it.isEmpty()) "Categoría vacía." else null)
             itemList.requestFocus()
             return
         }
         val token = ++loadToken
-        setRows(emptyList())
+        setRows(emptyList(), cat.name)
+        showBrowser()
         browserStatus("Cargando ${cat.name}…")
         io.execute {
             val result = runCatching { Xtream.items(acc, series, cat.id) }
@@ -660,7 +760,7 @@ class MainActivity : Activity() {
                 if (token != loadToken) return@post
                 result.onSuccess {
                     itemCache[key] = it
-                    setRows(it)
+                    setRows(it, cat.name)
                     browserStatus(if (it.isEmpty()) "Categoría vacía." else null)
                     if (it.isNotEmpty()) itemList.requestFocus()
                 }.onFailure { browserStatus("No se pudo cargar: ${it.message}") }
@@ -668,8 +768,9 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun setRows(newRows: List<Any>) {
+    private fun setRows(newRows: List<Any>, label: String) {
         rows = newRows
+        rowsLabel = label
         itemAdapter.notifyDataSetChanged()
         itemList.setSelection(0)
     }
@@ -685,10 +786,10 @@ class MainActivity : Activity() {
     )
 
     private fun onItem(position: Int) {
+        hideKeyboard()
         when (val row = rows.getOrNull(position)) {
             is Watch -> {
                 if (row.episode && row.seriesId.isNotEmpty() && openSeries?.id != row.seriesId) {
-                    // Load the episode list in the background so "next episode" works.
                     loadEpisodes(VodItem(true, row.seriesId, row.title, row.poster, row.ext, "", ""), playAfter = row)
                 } else {
                     playVod(row)
@@ -697,6 +798,7 @@ class MainActivity : Activity() {
             is Episode -> openSeries?.let { playVod(episodeWatch(it, row)) }
             is VodItem -> if (row.series) {
                 seriesBackRows = rows
+                seriesBackLabel = rowsLabel
                 seriesBackSelection = position
                 loadEpisodes(row, null)
             } else {
@@ -710,8 +812,8 @@ class MainActivity : Activity() {
         val token = ++loadToken
         if (playAfter == null) {
             openSeries = series
+            setRows(emptyList(), rowsLabel)
             showBrowser()
-            setRows(emptyList())
             browserStatus("Cargando episodios…")
         }
         io.execute {
@@ -721,6 +823,7 @@ class MainActivity : Activity() {
                 if (playAfter != null) {
                     // Coming from "Seguir viendo": remember the series, then play.
                     seriesBackRows = rows
+                    seriesBackLabel = rowsLabel
                     seriesBackSelection = itemList.selectedItemPosition.coerceAtLeast(0)
                     openSeries = series
                     episodes = result.getOrDefault(emptyList())
@@ -735,10 +838,12 @@ class MainActivity : Activity() {
                 }
                 result.onSuccess {
                     episodes = it
-                    setRows(it)
+                    rows = it
+                    itemAdapter.notifyDataSetChanged()
+                    showBrowser()
                     browserStatus(if (it.isEmpty()) "Esta serie no tiene episodios." else null)
                     val resumeIdx = it.indexOfFirst { e -> history.get("e:" + e.id)?.let { w -> !w.finished } == true }
-                    if (resumeIdx >= 0) itemList.setSelection(resumeIdx)
+                    itemList.setSelection(resumeIdx.coerceAtLeast(0))
                     itemList.requestFocus()
                 }.onFailure { browserStatus("No se pudo cargar: ${it.message}") }
             }
@@ -753,16 +858,161 @@ class MainActivity : Activity() {
                 loadToken++
                 browserStatus(null)
                 rows = seriesBackRows
+                rowsLabel = seriesBackLabel
                 itemAdapter.notifyDataSetChanged()
                 itemList.setSelection(seriesBackSelection)
                 showBrowser()
                 itemList.requestFocus()
             }
+            searchActive -> closeSearch(restore = true)
             itemList.hasFocus() -> catList.requestFocus()
             else -> {
                 loadToken++
                 closeBrowser()
             }
+        }
+    }
+
+    // ---------------------------------------------------------------- search
+
+    private fun toggleBrowserSearch() {
+        if (browserSearch.visibility == View.VISIBLE) {
+            closeSearch(restore = true)
+        } else {
+            browserSearch.visibility = View.VISIBLE
+            browserSearch.setText("")
+            browserSearch.requestFocus()
+            showKeyboard(browserSearch)
+        }
+    }
+
+    private fun closeSearch(restore: Boolean) {
+        main.removeCallbacks(searchDebounce)
+        if (::browserSearch.isInitialized) {
+            browserSearch.visibility = View.GONE
+            hideKeyboard()
+        }
+        if (searchActive && restore) {
+            loadToken++
+            rows = rowsBeforeSearch
+            rowsLabel = labelBeforeSearch
+            itemAdapter.notifyDataSetChanged()
+            browserStatus(null)
+            showBrowser()
+            itemList.requestFocus()
+        }
+        searchActive = false
+    }
+
+    private val searchDebounce = Runnable { runSearch(browserSearch.text.toString()) }
+
+    private fun runSearch(raw: String) {
+        val query = raw.trim()
+        if (query.length < 2) return
+        val acc = xtream() ?: return
+        val series = browserSeries
+        if (!searchActive) {
+            rowsBeforeSearch = rows
+            labelBeforeSearch = rowsLabel
+            searchActive = true
+        }
+        openSeries = null
+        val token = ++loadToken
+        val show = { all: List<VodItem> ->
+            val q = Search.normalize(query)
+            val hidden = hiddenCats(series)
+            val found = all.filter { it.categoryId !in hidden && it.searchKey.contains(q) }
+            setRows(found.take(400), "Buscar “$query”")
+            showBrowser()
+            browserStatus(if (found.isEmpty()) "Sin resultados para “$query”." else null)
+        }
+        val cached = catalogCache[series]
+        if (cached != null) {
+            show(cached)
+            return
+        }
+        setRows(emptyList(), "Buscar “$query”")
+        showBrowser()
+        browserStatus("Buscando en todo el catálogo…\nLa primera búsqueda tarda un poco.")
+        io.execute {
+            val result = runCatching { Xtream.items(acc, series, null) }
+            main.post {
+                result.onSuccess { catalogCache[series] = it }
+                if (token != loadToken) return@post
+                result.onSuccess { show(it) }.onFailure { browserStatus("No se pudo buscar: ${it.message}") }
+            }
+        }
+    }
+
+    private fun togglePanelSearch() {
+        if (panelSearch.visibility == View.VISIBLE) {
+            closePanelSearch()
+        } else {
+            panelSearch.visibility = View.VISIBLE
+            panelSearch.setText("")
+            panelSearch.requestFocus()
+            showKeyboard(panelSearch)
+        }
+    }
+
+    private fun closePanelSearch() {
+        panelSearch.visibility = View.GONE
+        hideKeyboard()
+        if (channelQuery.isNotEmpty()) {
+            channelQuery = ""
+            rebuildShown()
+        }
+        list.requestFocus()
+    }
+
+    private fun showKeyboard(view: View) {
+        view.post {
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun hideKeyboard() {
+        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(root.windowToken, 0)
+    }
+
+    // ---------------------------------------------------------------- hide categories / channels
+
+    private fun openFilter(kind: Int) {
+        when (kind) {
+            TAB_LIVE -> {
+                filterKey = "hide_ch"
+                filterHidden = hiddenChannels
+                filterEntries = channels.map { it.name to it.name }
+                filterTitle.text = "Mostrar u ocultar canales"
+            }
+            else -> {
+                val series = kind == TAB_SERIES
+                if (categoryCache[series] == null) {
+                    loadCategories { openFilter(kind) }
+                    return
+                }
+                filterKey = if (series) "hide_series" else "hide_vod"
+                filterHidden = hiddenCats(series)
+                filterEntries = categoryCache[series].orEmpty().map { it.id to it.name }
+                filterTitle.text = if (series) "Mostrar u ocultar categorías de series" else "Mostrar u ocultar categorías de películas"
+            }
+        }
+        hideKeyboard()
+        filterAdapter.notifyDataSetChanged()
+        filterBox.visibility = View.VISIBLE
+        filterList.requestFocus()
+        filterList.setSelection(0)
+    }
+
+    private fun closeFilter() {
+        filterBox.visibility = View.GONE
+        prefs.edit().putStringSet(filterKey, HashSet(filterHidden)).apply()
+        if (filterKey == "hide_ch") {
+            rebuildShown()
+            list.requestFocus()
+        } else {
+            showBrowser()
+            catList.requestFocus()
         }
     }
 
@@ -776,17 +1026,18 @@ class MainActivity : Activity() {
         return super.dispatchKeyEvent(event)
     }
 
+    private fun overlayOpen() = setup.visibility == View.VISIBLE || account.visibility == View.VISIBLE ||
+        browser.visibility == View.VISIBLE || filterBox.visibility == View.VISIBLE
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (setup.visibility == View.VISIBLE || panel.visibility == View.VISIBLE ||
-            account.visibility == View.VISIBLE || browser.visibility == View.VISIBLE
-        ) return super.onKeyDown(keyCode, event)
+        if (overlayOpen() || panel.visibility == View.VISIBLE) return super.onKeyDown(keyCode, event)
         if (vod != null) return vodKey(keyCode, event)
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_PAGE_UP -> zap(1)
             KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_PAGE_DOWN -> zap(-1)
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
             KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_GUIDE, KeyEvent.KEYCODE_TV_INPUT -> showPanel()
-            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_INFO -> showInfo()
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_INFO -> showInfo(false)
             in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> typeDigit(keyCode - KeyEvent.KEYCODE_0)
             else -> return super.onKeyDown(keyCode, event)
         }
@@ -802,11 +1053,7 @@ class MainActivity : Activity() {
         }
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE -> {
-                p.playWhenReady = !p.playWhenReady
-                if (!p.playWhenReady) saveVodProgress()
-                showVodBar()
-            }
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE -> togglePause()
             KeyEvent.KEYCODE_MEDIA_PLAY -> { p.playWhenReady = true; showVodBar() }
             KeyEvent.KEYCODE_MEDIA_PAUSE -> { p.playWhenReady = false; saveVodProgress(); showVodBar() }
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> seekBy(-step)
@@ -817,15 +1064,25 @@ class MainActivity : Activity() {
         return true
     }
 
+    private fun togglePause() {
+        val p = player ?: return
+        p.playWhenReady = !p.playWhenReady
+        if (!p.playWhenReady) saveVodProgress()
+        showVodBar()
+    }
+
     private fun onBack() {
         when {
+            filterBox.visibility == View.VISIBLE -> closeFilter()
             account.visibility == View.VISIBLE -> {
                 account.visibility = View.GONE
+                hideKeyboard()
                 if (browser.visibility != View.VISIBLE && vod == null) {
-                    if (player == null || player?.isPlaying != true) play(current)
+                    if (player?.isPlaying != true) play(current)
                     root.requestFocus()
                 }
             }
+            panel.visibility == View.VISIBLE && panelSearch.visibility == View.VISIBLE -> closePanelSearch()
             panel.visibility == View.VISIBLE -> {
                 hidePanel()
                 armExit()
@@ -847,33 +1104,6 @@ class MainActivity : Activity() {
         Toast.makeText(this, "Presiona Atrás otra vez para salir", Toast.LENGTH_SHORT).show()
     }
 
-    // ---------------------------------------------------------------- touch (phones / tablets)
-
-    private fun overlayOpen() = setup.visibility == View.VISIBLE || account.visibility == View.VISIBLE ||
-        browser.visibility == View.VISIBLE
-
-    private fun onTap() {
-        when {
-            overlayOpen() -> {}
-            panel.visibility == View.VISIBLE -> hidePanel()
-            vod != null -> {
-                val p = player
-                if (vodBar.visibility == View.VISIBLE && p != null) {
-                    p.playWhenReady = !p.playWhenReady
-                    if (!p.playWhenReady) saveVodProgress()
-                }
-                showVodBar()
-            }
-            else -> showPanel()
-        }
-    }
-
-    /** Horizontal swipe: live -> change channel (left = next), movie -> seek 30 s. */
-    private fun onSwipe(toLeft: Boolean) {
-        if (overlayOpen() || panel.visibility == View.VISIBLE) return
-        if (vod != null) seekBy(if (toLeft) 30_000L else -30_000L) else zap(if (toLeft) 1 else -1)
-    }
-
     private fun typeDigit(d: Int) {
         if (digits.length >= 3) digits = ""
         digits += d
@@ -890,16 +1120,145 @@ class MainActivity : Activity() {
         if (n != null && n in 1..channels.size) play(n - 1)
     }
 
+    // ---------------------------------------------------------------- touch (phones / tablets)
+
+    private var downX = 0f
+    private var downY = 0f
+    private var tracking = false
+    private var dragging = false
+    private var dragTarget = -1
+    private var velocity: VelocityTracker? = null
+    private val slop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
+    private var cardPending = false
+
+    private fun onTouch(e: MotionEvent) {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = e.x
+                downY = e.y
+                tracking = true
+                dragging = false
+                dragTarget = -1
+                velocity?.recycle()
+                velocity = VelocityTracker.obtain().also { it.addMovement(e) }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                velocity?.addMovement(e)
+                val dx = e.x - downX
+                val dy = e.y - downY
+                if (!dragging && tracking && abs(dx) > slop * 2 && abs(dx) > abs(dy) * 1.3f && canDrag()) {
+                    dragging = true
+                    hideInfo.run()
+                }
+                if (!dragging && abs(dy) > slop * 2) tracking = false
+                if (dragging && vod == null) dragTo(dx)
+            }
+            MotionEvent.ACTION_UP -> {
+                velocity?.addMovement(e)
+                velocity?.computeCurrentVelocity(1000)
+                val vx = velocity?.xVelocity ?: 0f
+                val dx = e.x - downX
+                when {
+                    dragging && vod != null -> seekBy(if (dx < 0) 30_000L else -30_000L)
+                    dragging -> endDrag(dx, vx)
+                    tracking && abs(dx) < slop * 2 && abs(e.y - downY) < slop * 2 -> onTap()
+                }
+                dragging = false
+                tracking = false
+                velocity?.recycle()
+                velocity = null
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                if (dragging && vod == null) endDrag(0f, 0f)
+                dragging = false
+                tracking = false
+            }
+        }
+    }
+
+    private fun canDrag() = !overlayOpen() && panel.visibility != View.VISIBLE &&
+        (vod != null || channels.size > 1)
+
+    /** Moves the video with the finger while the next channel's card slides in. */
+    private fun dragTo(dx: Float) {
+        val w = root.width.toFloat()
+        val target = neighbor(if (dx < 0) 1 else -1)
+        if (target != dragTarget) {
+            dragTarget = target
+            fillCard(target)
+        }
+        surface.translationX = dx
+        card.alpha = 1f
+        card.visibility = View.VISIBLE
+        card.translationX = if (dx < 0) w + dx else -w + dx
+    }
+
+    private fun endDrag(dx: Float, vx: Float) {
+        val w = root.width.toFloat()
+        val fling = abs(vx) > dp(900) && (vx < 0) == (dx < 0)
+        val commit = dragTarget >= 0 && dx != 0f && (abs(dx) > w * 0.28f || fling)
+        if (commit) {
+            val dir = if (dx < 0) -1f else 1f
+            val target = dragTarget
+            surface.animate().translationX(dir * w).setDuration(180).start()
+            card.animate().translationX(0f).setDuration(180).withEndAction {
+                surface.translationX = 0f
+                cardPending = true
+                play(target)
+                main.removeCallbacks(cardTimeout)
+                main.postDelayed(cardTimeout, 5000)
+            }.start()
+        } else {
+            surface.animate().translationX(0f).setDuration(160).start()
+            val away = if (card.translationX > 0) w else -w
+            card.animate().translationX(away).setDuration(160).withEndAction { card.visibility = View.GONE }.start()
+        }
+    }
+
+    private val cardTimeout = Runnable { fadeCard() }
+
+    private fun fadeCard() {
+        if (!cardPending || card.visibility != View.VISIBLE) return
+        cardPending = false
+        main.removeCallbacks(cardTimeout)
+        card.animate().alpha(0f).setDuration(250).withEndAction {
+            card.visibility = View.GONE
+            card.alpha = 1f
+        }.start()
+    }
+
+    private fun fillCard(index: Int) {
+        val ch = channels.getOrNull(index) ?: return
+        logos.load(ch.logo, cardLogo)
+        cardName.text = "${ch.number}   ${ch.name}"
+        val now = Guide.nowNext(guide[ch.tvgId], System.currentTimeMillis()).first
+        cardNow.text = now?.let { "${hm.format(Date(it.start))} – ${hm.format(Date(it.stop))}   ${it.title}" } ?: ""
+    }
+
+    private fun onTap() {
+        when {
+            overlayOpen() -> {}
+            panel.visibility == View.VISIBLE -> hidePanel()
+            vod != null -> if (vodBar.visibility == View.VISIBLE) togglePause() else showVodBar()
+            info.visibility == View.VISIBLE && menuButton.visibility == View.VISIBLE -> hideInfo.run()
+            else -> showInfo(true)
+        }
+    }
+
     // ---------------------------------------------------------------- overlays
 
-    private val hideInfo = Runnable { info.visibility = View.GONE }
+    private val hideInfo = Runnable {
+        info.visibility = View.GONE
+        menuButton.visibility = View.GONE
+    }
 
-    private fun showInfo() {
+    private fun showInfo(touch: Boolean) {
         if (channels.isEmpty()) return
         updateInfo()
         info.visibility = View.VISIBLE
+        if (touch) menuButton.visibility = View.VISIBLE
         main.removeCallbacks(hideInfo)
-        main.postDelayed(hideInfo, 5000)
+        main.postDelayed(hideInfo, if (touch) 6000 else 5000)
     }
 
     private fun updateInfo() {
@@ -925,16 +1284,24 @@ class MainActivity : Activity() {
             showSetup(null)
             return
         }
-        main.removeCallbacks(hideInfo)
-        info.visibility = View.GONE
-        panelClock.text = hm.format(Date())
+        hideInfo.run()
+        markTabs(panelTabs, TAB_LIVE)
         adapter.notifyDataSetChanged()
         panel.visibility = View.VISIBLE
         list.requestFocus()
-        list.setSelectionFromTop(current + CH_OFFSET, dp(140))
+        val pos = shown.indexOf(current).coerceAtLeast(0)
+        list.setSelectionFromTop(pos, dp(140))
     }
 
     private fun hidePanel() {
+        if (panelSearch.visibility == View.VISIBLE) {
+            panelSearch.visibility = View.GONE
+            if (channelQuery.isNotEmpty()) {
+                channelQuery = ""
+                rebuildShown()
+            }
+        }
+        hideKeyboard()
         panel.visibility = View.GONE
         root.requestFocus()
     }
@@ -961,6 +1328,7 @@ class MainActivity : Activity() {
 
     private fun hideSetup() {
         setup.visibility = View.GONE
+        hideKeyboard()
         root.requestFocus()
     }
 
@@ -984,7 +1352,7 @@ class MainActivity : Activity() {
         accPass.setText(prefs.getString("xt_pass", "").orEmpty())
         accMessage.text = message ?: if (playlistAccount != null)
             "Tu lista ya trae la cuenta; lo que escribas aquí solo se usa si la quitas de la lista."
-        else "Para ver películas y series escribe tu cuenta Xtream (se guarda solo en esta TV)."
+        else "Para ver películas y series escribe tu cuenta Xtream (se guarda solo en este equipo)."
         account.visibility = View.VISIBLE
         (if (accUser.text.isEmpty()) accUser else accServer).requestFocus()
     }
@@ -998,12 +1366,14 @@ class MainActivity : Activity() {
         prefs.edit().putString("xt_server", acc.base).putString("xt_user", acc.user).putString("xt_pass", acc.pass).apply()
         categoryCache.clear()
         itemCache.clear()
+        catalogCache.clear()
         cats = emptyList()
         account.visibility = View.GONE
+        hideKeyboard()
         openBrowser(pendingSeries)
     }
 
-    // ---------------------------------------------------------------- UI
+    // ---------------------------------------------------------------- UI helpers
 
     private fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
@@ -1020,9 +1390,16 @@ class MainActivity : Activity() {
         cornerRadius = dp(radius).toFloat()
     }
 
+    /** Blue when focused (remote) or pressed (touch), transparent otherwise. */
+    private fun focusBg(radius: Int = 10): Drawable = StateListDrawable().apply {
+        addState(intArrayOf(android.R.attr.state_focused), box(BLUE, radius))
+        addState(intArrayOf(android.R.attr.state_pressed), box(BLUE, radius))
+        addState(intArrayOf(), ColorDrawable(Color.TRANSPARENT))
+    }
+
     private fun input(hint: String, password: Boolean = false) = EditText(this).apply {
         setTextColor(Color.WHITE)
-        setHintTextColor(0xFF8FA0CC.toInt())
+        setHintTextColor(HINT)
         this.hint = hint
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
         setSingleLine()
@@ -1034,11 +1411,54 @@ class MainActivity : Activity() {
     private fun styledList() = ListView(this).apply {
         divider = ColorDrawable(0x22FFFFFF)
         dividerHeight = 1
-        selector = box(0xFF2F6FEB.toInt(), 8)
+        selector = box(BLUE, 8)
         isVerticalScrollBarEnabled = false
         itemsCanFocus = false
         isFocusable = true
     }
+
+    private fun iconButton(icon: Int, onClick: () -> Unit) = ImageView(this).apply {
+        setImageResource(icon)
+        scaleType = ImageView.ScaleType.CENTER_INSIDE
+        setPadding(dp(9), dp(9), dp(9), dp(9))
+        background = focusBg(22)
+        isFocusable = true
+        isClickable = true
+        setOnClickListener { onClick() }
+    }
+
+    /** "Canales  Películas  Series   [lupa] [filtro]" */
+    private fun topBar(onSearch: () -> Unit, onFilter: () -> Unit): Pair<LinearLayout, List<TextView>> {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val tabs = listOf("Canales", "Películas", "Series").mapIndexed { i, label ->
+            text(21f).apply {
+                this.text = label
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = focusBg()
+                isFocusable = true
+                isClickable = true
+                setOnClickListener { onTab(i) }
+            }
+        }
+        tabs.forEach { bar.addView(it, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(4) }) }
+        bar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        bar.addView(iconButton(R.drawable.ic_search, onSearch), LinearLayout.LayoutParams(dp(44), dp(44)))
+        bar.addView(iconButton(R.drawable.ic_filter, onFilter), LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = dp(6) })
+        return bar to tabs
+    }
+
+    private fun searchBox(hint: String) = input(hint).apply {
+        inputType = InputType.TYPE_CLASS_TEXT
+        imeOptions = EditorInfo.IME_ACTION_SEARCH
+        background = box(0x33FFFFFF, 8)
+        setPadding(dp(12), dp(8), dp(12), dp(8))
+        visibility = View.GONE
+    }
+
+    // ---------------------------------------------------------------- UI
 
     private fun buildUi() {
         root = FrameLayout(this).apply {
@@ -1046,26 +1466,25 @@ class MainActivity : Activity() {
             isFocusable = true
             isFocusableInTouchMode = true
             addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
+            setOnTouchListener { _, e -> onTouch(e); true }
         }
         surface = SurfaceView(this)
         root.addView(surface, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
-        val minSwipe = dp(80)
-        val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent) = true
-            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                onTap()
-                return true
-            }
-            override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
-                val start = e1 ?: return false
-                val dx = e2.x - start.x
-                val dy = e2.y - start.y
-                if (Math.abs(dx) < minSwipe || Math.abs(dx) < Math.abs(dy) * 1.5f) return false
-                onSwipe(dx < 0)
-                return true
-            }
-        })
-        root.setOnTouchListener { _, e -> gestures.onTouchEvent(e); true }
+
+        // Card of the channel that slides in while swiping
+        card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(0xFF0B1230.toInt())
+            visibility = View.GONE
+        }
+        cardLogo = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+        card.addView(cardLogo, LinearLayout.LayoutParams(dp(220), dp(124)).apply { bottomMargin = dp(18) })
+        cardName = text(30f, bold = true).apply { gravity = Gravity.CENTER }
+        cardNow = text(18f, MUTED).apply { gravity = Gravity.CENTER }
+        card.addView(cardName)
+        card.addView(cardNow, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) })
+        root.addView(card, FrameLayout.LayoutParams(-1, -1))
 
         // Bottom info banner (live)
         info = LinearLayout(this).apply {
@@ -1080,7 +1499,7 @@ class MainActivity : Activity() {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         infoTitle = text(24f, bold = true)
         infoNow = text(18f)
-        infoNext = text(16f, 0xFFB8C7F0.toInt())
+        infoNext = text(16f, MUTED)
         infoProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
         col.addView(infoTitle)
         col.addView(infoNow)
@@ -1091,6 +1510,21 @@ class MainActivity : Activity() {
             leftMargin = dp(40); rightMargin = dp(40); bottomMargin = dp(28)
         })
 
+        // Round button (touch) that opens the channel list
+        menuButton = text(18f, bold = true).apply {
+            this.text = "  Canales"
+            setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_menu, 0, 0, 0)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(20), dp(10))
+            background = box(0xE60A1E5A.toInt(), 28)
+            isClickable = true
+            visibility = View.GONE
+            setOnClickListener { showPanel() }
+        }
+        root.addView(menuButton, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply {
+            topMargin = dp(24); leftMargin = dp(32)
+        })
+
         // Bottom bar (movies / series)
         vodBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1099,7 +1533,7 @@ class MainActivity : Activity() {
             visibility = View.GONE
         }
         vodTitle = text(24f, bold = true)
-        vodSub = text(17f, 0xFFB8C7F0.toInt())
+        vodSub = text(17f, MUTED)
         vodProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
         vodTime = text(17f)
         vodBar.addView(vodTitle)
@@ -1107,7 +1541,7 @@ class MainActivity : Activity() {
         vodBar.addView(vodProgress, LinearLayout.LayoutParams(-1, dp(8)).apply { topMargin = dp(8); bottomMargin = dp(6) })
         val timeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         timeRow.addView(vodTime, LinearLayout.LayoutParams(0, -2, 1f))
-        timeRow.addView(text(14f, 0xFF8FA0CC.toInt()).apply { this.text = "OK pausa  ·  ◀ ▶ retrocede/adelanta  ·  Atrás vuelve" })
+        timeRow.addView(text(14f, HINT).apply { this.text = "OK pausa  ·  ◀ ▶ retrocede/adelanta  ·  Atrás vuelve" })
         vodBar.addView(timeRow)
         root.addView(vodBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
             leftMargin = dp(40); rightMargin = dp(40); bottomMargin = dp(28)
@@ -1122,30 +1556,38 @@ class MainActivity : Activity() {
         }
         root.addView(status, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
 
-        // Channel list panel
+        // Channel side panel
         panel = LinearLayout(this).apply {
-            isClickable = true
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xF00A1238.toInt())
-            setPadding(dp(16), dp(18), dp(16), dp(10))
+            isClickable = true
+            setBackgroundColor(0xF20A1238.toInt())
+            setPadding(dp(14), dp(14), dp(14), dp(10))
             visibility = View.GONE
         }
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        header.addView(text(24f, bold = true).apply { this.text = "Canales" }, LinearLayout.LayoutParams(0, -2, 1f))
-        panelClock = text(20f, 0xFFB8C7F0.toInt())
-        header.addView(panelClock)
-        panel.addView(header, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        val (panelBar, pTabs) = topBar({ togglePanelSearch() }, { openFilter(TAB_LIVE) })
+        panelTabs = pTabs
+        panel.addView(panelBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+        panelSearch = searchBox("Buscar canal").apply {
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    channelQuery = s?.toString().orEmpty()
+                    rebuildShown()
+                }
+            })
+            setOnEditorActionListener { _, _, _ -> hideKeyboard(); list.requestFocus(); true }
+        }
+        panel.addView(panelSearch, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
         list = styledList().apply {
             adapter = this@MainActivity.adapter
             setOnItemClickListener { _, _, position, _ ->
                 when {
-                    position == ROW_MOVIES -> openBrowser(false)
-                    position == ROW_SERIES -> openBrowser(true)
-                    position - CH_OFFSET in channels.indices -> {
+                    position < shown.size -> {
                         hidePanel()
-                        play(position - CH_OFFSET)
+                        play(shown[position])
                     }
-                    position == channels.size + CH_OFFSET -> {
+                    position == shown.size -> {
                         pendingSeries = false
                         showAccount(null)
                     }
@@ -1154,34 +1596,55 @@ class MainActivity : Activity() {
             }
         }
         panel.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
-        panel.addView(text(13f, 0xFF8FA0CC.toInt()).apply {
-            this.text = "OK: ver   ·   Atrás: cerrar   ·   En pantalla: ▲▼ cambia canal, números para ir directo"
+        panel.addView(text(13f, HINT).apply {
+            this.text = "OK: ver  ·  Atrás: cerrar  ·  ▲▼ en pantalla cambia canal"
         })
-        root.addView(panel, FrameLayout.LayoutParams(dp(470), -1, Gravity.START))
+        root.addView(panel, FrameLayout.LayoutParams(dp(520), -1, Gravity.START))
 
         // Movies / series browser
         browser = LinearLayout(this).apply {
-            isClickable = true
             orientation = LinearLayout.VERTICAL
+            isClickable = true
             setBackgroundColor(0xFA081030.toInt())
-            setPadding(dp(32), dp(22), dp(32), dp(14))
+            setPadding(dp(28), dp(16), dp(28), dp(12))
             visibility = View.GONE
         }
-        browserTitle = text(28f, bold = true)
-        browser.addView(browserTitle, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
+        val (browserBar, bTabs) = topBar({ toggleBrowserSearch() }, { openFilter(if (browserSeries) TAB_SERIES else TAB_MOVIES) })
+        browserTabs = bTabs
+        browser.addView(browserBar, LinearLayout.LayoutParams(-1, -2))
+        browserSub = text(17f, MUTED)
+        browser.addView(browserSub, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4); bottomMargin = dp(8); leftMargin = dp(12) })
+        browserSearch = searchBox("Buscar en todo el catálogo").apply {
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    main.removeCallbacks(searchDebounce)
+                    if ((s?.length ?: 0) >= 2) main.postDelayed(searchDebounce, 900)
+                }
+            })
+            setOnEditorActionListener { _, _, _ ->
+                main.removeCallbacks(searchDebounce)
+                runSearch(text.toString())
+                hideKeyboard()
+                if (rows.isNotEmpty()) itemList.requestFocus()
+                true
+            }
+        }
+        browser.addView(browserSearch, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         val body = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         catList = styledList().apply {
             adapter = catAdapter
             setOnItemClickListener { _, _, position, _ -> onCategory(position) }
         }
-        body.addView(catList, LinearLayout.LayoutParams(dp(320), -1).apply { rightMargin = dp(20) })
+        body.addView(catList, LinearLayout.LayoutParams(dp(300), -1).apply { rightMargin = dp(18) })
         val right = FrameLayout(this)
         itemList = styledList().apply {
             adapter = itemAdapter
             setOnItemClickListener { _, _, position, _ -> onItem(position) }
         }
         right.addView(itemList, FrameLayout.LayoutParams(-1, -1))
-        browserMessage = text(20f, 0xFFB8C7F0.toInt()).apply {
+        browserMessage = text(20f, MUTED).apply {
             maxLines = 4
             gravity = Gravity.CENTER
             visibility = View.GONE
@@ -1189,9 +1652,9 @@ class MainActivity : Activity() {
         right.addView(browserMessage, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
         body.addView(right, LinearLayout.LayoutParams(0, -1, 1f))
         browser.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
-        browser.addView(text(13f, 0xFF8FA0CC.toInt()).apply {
-            this.text = "OK: abrir   ·   ◀ ▶: categorías / títulos   ·   Atrás: volver"
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        browser.addView(text(13f, HINT).apply {
+            this.text = "OK: abrir  ·  ◀ ▶: categorías / títulos  ·  ▲ arriba: pestañas, buscar y filtro  ·  Atrás: volver"
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
         root.addView(browser, FrameLayout.LayoutParams(-1, -1))
 
         numberView = text(48f, bold = true).apply {
@@ -1203,20 +1666,49 @@ class MainActivity : Activity() {
             topMargin = dp(30); rightMargin = dp(40)
         })
 
+        // Hide categories / channels dialog
+        filterBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            setPadding(dp(24), dp(20), dp(24), dp(16))
+            background = box(0xFF0A1E5A.toInt(), 16)
+            visibility = View.GONE
+        }
+        filterTitle = text(22f, bold = true)
+        filterBox.addView(filterTitle)
+        filterBox.addView(text(15f, MUTED).apply { this.text = "OK o toque para mostrar u ocultar. Lo oculto no aparece en listas ni búsquedas." },
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(4); bottomMargin = dp(10) })
+        filterList = styledList().apply {
+            adapter = filterAdapter
+            setOnItemClickListener { _, _, position, _ ->
+                val id = filterEntries.getOrNull(position)?.first ?: return@setOnItemClickListener
+                if (!filterHidden.remove(id)) filterHidden.add(id)
+                filterAdapter.notifyDataSetChanged()
+            }
+        }
+        filterBox.addView(filterList, LinearLayout.LayoutParams(-1, 0, 1f))
+        filterBox.addView(Button(this).apply {
+            this.text = "Listo"
+            setOnClickListener { closeFilter() }
+        }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.END; topMargin = dp(8) })
+        root.addView(filterBox, FrameLayout.LayoutParams(dp(560), -1, Gravity.CENTER).apply {
+            topMargin = dp(30); bottomMargin = dp(30)
+        })
+
         // Playlist setup screen
         setup = LinearLayout(this).apply {
-            isClickable = true
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
+            isClickable = true
             setPadding(dp(36), dp(28), dp(36), dp(28))
             background = box(0xFF0A1E5A.toInt(), 16)
             visibility = View.GONE
         }
         setup.addView(text(30f, bold = true).apply { this.text = "AerioTV Lite" })
-        setupMessage = text(18f, 0xFFB8C7F0.toInt()).apply { maxLines = 3; gravity = Gravity.CENTER }
+        setupMessage = text(18f, MUTED).apply { maxLines = 3; gravity = Gravity.CENTER }
         setup.addView(setupMessage, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10); bottomMargin = dp(16) })
         setupInput = input("https://…").apply {
-            textSize = 22f
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             imeOptions = EditorInfo.IME_ACTION_DONE
             setOnEditorActionListener { _, _, _ -> saveSetup(); true }
         }
@@ -1229,15 +1721,15 @@ class MainActivity : Activity() {
 
         // Xtream account screen
         account = LinearLayout(this).apply {
-            isClickable = true
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
+            isClickable = true
             setPadding(dp(36), dp(28), dp(36), dp(28))
             background = box(0xFF0A1E5A.toInt(), 16)
             visibility = View.GONE
         }
         account.addView(text(28f, bold = true).apply { this.text = "Películas y series" })
-        accMessage = text(17f, 0xFFB8C7F0.toInt()).apply { maxLines = 3; gravity = Gravity.CENTER }
+        accMessage = text(17f, MUTED).apply { maxLines = 3; gravity = Gravity.CENTER }
         account.addView(accMessage, LinearLayout.LayoutParams(dp(560), -2).apply { topMargin = dp(8); bottomMargin = dp(12) })
         accServer = input("Servidor (https://…)")
         accUser = input("Usuario")
@@ -1264,21 +1756,24 @@ class MainActivity : Activity() {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(8), dp(7), dp(8), dp(7))
-        addView(text(18f, 0xFF8FA0CC.toInt()).apply { gravity = Gravity.END }, LinearLayout.LayoutParams(dp(40), -2).apply { rightMargin = dp(12) })
+        addView(text(18f, HINT).apply { gravity = Gravity.END }, LinearLayout.LayoutParams(dp(40), -2).apply { rightMargin = dp(12) })
         addView(ImageView(this@MainActivity).apply { scaleType = ImageView.ScaleType.FIT_CENTER }, LinearLayout.LayoutParams(dp(logoW), dp(logoH)).apply { rightMargin = dp(12) })
         val col = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
         col.addView(text(19f, bold = true))
-        col.addView(text(15f, 0xFFB8C7F0.toInt()))
+        col.addView(text(15f, MUTED))
         addView(col, LinearLayout.LayoutParams(0, -2, 1f))
     }
 
     private fun fillRow(row: LinearLayout, number: String, logo: String, title: String, sub: String, highlight: Boolean = false) {
-        (row.getChildAt(0) as TextView).text = number
+        (row.getChildAt(0) as TextView).apply {
+            text = if (highlight) "▶" else number
+            setTextColor(if (highlight) ACCENT else HINT)
+        }
         logos.load(logo, row.getChildAt(1) as ImageView)
         val col = row.getChildAt(2) as LinearLayout
         (col.getChildAt(0) as TextView).apply {
             text = title
-            setTextColor(if (highlight) 0xFF7FD3FF.toInt() else Color.WHITE)
+            setTextColor(if (highlight) ACCENT else Color.WHITE)
         }
         (col.getChildAt(1) as TextView).apply {
             text = sub
@@ -1287,22 +1782,20 @@ class MainActivity : Activity() {
     }
 
     private inner class ChannelAdapter : BaseAdapter() {
-        override fun getCount() = if (channels.isEmpty()) 0 else channels.size + CH_OFFSET + 2
-        override fun getItem(position: Int): Any? = channels.getOrNull(position - CH_OFFSET)
+        override fun getCount() = if (channels.isEmpty()) 0 else shown.size + 2
+        override fun getItem(position: Int): Any? = shown.getOrNull(position)?.let { channels.getOrNull(it) }
         override fun getItemId(position: Int) = position.toLong()
 
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
             val row = (convertView as? LinearLayout) ?: makeRow(72, 40)
             when {
-                position == ROW_MOVIES -> fillRow(row, "▶", "", "Películas", "Catálogo del proveedor")
-                position == ROW_SERIES -> fillRow(row, "▶", "", "Series", "Catálogo del proveedor")
-                position - CH_OFFSET in channels.indices -> {
-                    val index = position - CH_OFFSET
+                position < shown.size -> {
+                    val index = shown[position]
                     val ch = channels[index]
                     val program = Guide.nowNext(guide[ch.tvgId], System.currentTimeMillis()).first
-                    fillRow(row, ch.number.toString(), ch.logo, ch.name, program?.title.orEmpty(), index == current)
+                    fillRow(row, ch.number.toString(), ch.logo, ch.name, program?.title.orEmpty(), vod == null && index == current)
                 }
-                position == channels.size + CH_OFFSET -> fillRow(row, "⚙", "", "Cuenta de películas y series", "")
+                position == shown.size -> fillRow(row, "⚙", "", "Cuenta de películas y series", "")
                 else -> fillRow(row, "⚙", "", "Cambiar dirección de la lista", "")
             }
             return row
@@ -1310,13 +1803,13 @@ class MainActivity : Activity() {
     }
 
     private inner class CategoryAdapter : BaseAdapter() {
-        override fun getCount() = cats.size + if (hasContinueRow) 1 else 0
+        override fun getCount() = visibleCats.size + if (hasContinueRow) 1 else 0
         override fun getItem(position: Int): Any? = null
         override fun getItemId(position: Int) = position.toLong()
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
             val tv = (convertView as? TextView) ?: text(19f).apply { setPadding(dp(12), dp(10), dp(12), dp(10)) }
             tv.text = if (hasContinueRow && position == 0) "▶ Seguir viendo"
-            else cats.getOrNull(position - if (hasContinueRow) 1 else 0)?.name.orEmpty()
+            else visibleCats.getOrNull(position - if (hasContinueRow) 1 else 0)?.name.orEmpty()
             return tv
         }
     }
@@ -1353,6 +1846,20 @@ class MainActivity : Activity() {
                     listOf(r.subtitle, "Quedaste en ${clock(r.position)}").filter { it.isNotEmpty() }.joinToString("   ·   "))
             }
             return row
+        }
+    }
+
+    private inner class FilterAdapter : BaseAdapter() {
+        override fun getCount() = filterEntries.size
+        override fun getItem(position: Int): Any? = filterEntries.getOrNull(position)
+        override fun getItemId(position: Int) = position.toLong()
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+            val tv = (convertView as? TextView) ?: text(19f).apply { setPadding(dp(12), dp(10), dp(12), dp(10)) }
+            val (id, name) = filterEntries[position]
+            val hidden = id in filterHidden
+            tv.text = (if (hidden) "☐   " else "☑   ") + name + if (hidden) "   (oculto)" else ""
+            tv.setTextColor(if (hidden) HINT else Color.WHITE)
+            return tv
         }
     }
 }
