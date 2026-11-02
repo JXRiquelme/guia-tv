@@ -8,4 +8,4 @@ App mínima para Android TV antiguos: lee una lista M3U (la misma del Roku) y la
 
 El APK se compila solo con GitHub Actions y queda en Releases (`lite`).
 
-Versión actual: 1.7
+Versión actual: 1.7.1

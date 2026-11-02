@@ -1566,7 +1566,7 @@ class MainActivity : Activity() {
                 when {
                     !dragging && vod == null && dy < -dp(90) && abs(dy) > abs(dx) * 1.5f &&
                         !overlayOpen() && panel.visibility != View.VISIBLE -> openEpg()
-                    dragging && vod != null -> seekBy(if (dx < 0) 30_000L else -30_000L)
+                    dragging && vod != null -> seekBy(if (dx > 0) 30_000L else -30_000L)
                     dragging -> endDrag(dx, vx)
                     tracking && abs(dx) < slop * 2 && abs(e.y - downY) < slop * 2 -> onTap()
                 }
@@ -2383,7 +2383,6 @@ class MainActivity : Activity() {
             isClickable = true
             setPadding(dp(20), dp(18), dp(20), dp(14))
             background = box(0xF20A1E5A.toInt(), 16)
-            visibility = View.GONE
         }
         pickerTitle = text(21f, bold = true)
         pickerBox.addView(pickerTitle, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
