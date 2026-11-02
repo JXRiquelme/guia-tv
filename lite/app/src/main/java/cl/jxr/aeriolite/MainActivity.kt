@@ -462,9 +462,13 @@ class MainActivity : Activity() {
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
-                    Player.STATE_BUFFERING -> if (card.visibility != View.VISIBLE) showStatus("Cargando…")
+                    Player.STATE_BUFFERING -> if (card.visibility != View.VISIBLE) {
+                        val note = resumeNote
+                        showStatus(if (vod != null && note != null) "Cargando…\n$note" else "Cargando…")
+                    }
                     Player.STATE_READY -> {
                         retries = 0
+                        resumeNote = null
                         hideStatus()
                         fadeCard()
                     }
@@ -515,6 +519,7 @@ class MainActivity : Activity() {
         saveVodProgress()
         if (vod != null) shutter.visibility = View.VISIBLE
         vod = null
+        resumeNote = null
         hideVodBar()
         subtitleText.visibility = View.GONE
         if (aspectMode != 0) { aspectMode = 0; fitVideo() }
@@ -632,7 +637,8 @@ class MainActivity : Activity() {
         subtitleText.visibility = View.GONE
         // Appears in "Seguir viendo" right away, not only after some minutes.
         history.update(w, resumeAt, saved?.duration ?: 0L)
-        if (resumeAt > 0) Toast.makeText(this, "Continuando desde ${clock(resumeAt)}", Toast.LENGTH_LONG).show()
+        resumeNote = if (resumeAt > 0) "Continuando desde ${clock(resumeAt)}" else null
+        if (resumeNote != null) showStatus("Cargando…\n$resumeNote")
         root.requestFocus()
         showVodBar()
         main.removeCallbacks(vodSaver)
@@ -1810,8 +1816,12 @@ class MainActivity : Activity() {
         root.requestFocus()
     }
 
+    private var resumeNote: String? = null
+
+    /** Center message; while a movie plays it sits higher so it never covers the control bar. */
     private fun showStatus(text: String) {
         status.text = text
+        status.translationY = if (vod != null) -root.height * 0.22f else 0f
         status.visibility = View.VISIBLE
     }
 
