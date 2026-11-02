@@ -699,17 +699,31 @@ class MainActivity : Activity() {
         }
     }
 
+    /** True while the bar is on screen only because of ◀ ▶ seeking (arrows keep seeking). */
+    private var seekMode = false
+
     private fun seekBy(deltaMs: Long) {
         val p = player ?: return
         val dur = p.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: Long.MAX_VALUE
         p.seekTo((p.currentPosition + deltaMs).coerceIn(0, dur))
+        val wasVisible = vodBar.visibility == View.VISIBLE
         showVodBar()
+        if (!wasVisible || !vodBar.hasFocus()) seekMode = true
     }
 
-    private val hideVodBarTask = Runnable {
-        if (player?.isPlaying == true && pickerLayer.visibility != View.VISIBLE) {
-            vodBar.visibility = View.GONE
-            root.requestFocus()
+    private val hideVodBarTask: Runnable = object : Runnable {
+        override fun run() {
+            val p = player
+            when {
+                vod == null || vodBar.visibility != View.VISIBLE -> {}
+                p != null && !p.playWhenReady -> {}                       // paused: stays until resumed
+                pickerLayer.visibility == View.VISIBLE -> main.postDelayed(this, 3000)
+                else -> {
+                    vodBar.visibility = View.GONE
+                    seekMode = false
+                    root.requestFocus()
+                }
+            }
         }
     }
     private val vodBarUpdater = object : Runnable {
@@ -723,7 +737,10 @@ class MainActivity : Activity() {
 
     private fun showVodBar(focusControls: Boolean = false) {
         val w = vod ?: return
-        if (focusControls) btnPlay.post { btnPlay.requestFocus() }
+        if (focusControls) {
+            seekMode = false
+            btnPlay.post { btnPlay.requestFocus() }
+        }
         vodTitle.text = w.title
         vodSub.text = w.subtitle
         vodSub.visibility = if (w.subtitle.isEmpty()) View.GONE else View.VISIBLE
@@ -751,7 +768,6 @@ class MainActivity : Activity() {
         btnPlay.text = if (p.playWhenReady) "❚❚  Pausa" else "▶  Reproducir"
         if (!p.playWhenReady) {
             vodBar.visibility = View.VISIBLE
-            main.removeCallbacks(hideVodBarTask)
         }
     }
 
@@ -821,10 +837,18 @@ class MainActivity : Activity() {
             buildChips()
             if (items.isEmpty()) selectCategory(selectedCat[series] ?: defaultCategory())
         }
+        grid.setSelectionFromTop(0, 0)
         grid.post {
+            grid.setSelectionFromTop(0, 0)
             val first = if (continueBox.visibility == View.VISIBLE) continueRow.getChildAt(0) else chips.firstOrNull()
             (first ?: grid).requestFocus()
+            grid.post { grid.setSelectionFromTop(0, 0) }
         }
+    }
+
+    /** Show the catalog from its first line ("Seguir viendo" or the categories). */
+    private fun scrollCatalogTop() {
+        if (grid.firstVisiblePosition != 0 || (grid.getChildAt(0)?.top ?: 0) != 0) grid.setSelectionFromTop(0, 0)
     }
 
     private fun closeBrowser() {
@@ -899,6 +923,7 @@ class MainActivity : Activity() {
                 isFocusable = true
                 isClickable = true
                 setOnClickListener { selectCategory(cat) }
+                setOnFocusChangeListener { _, has -> if (has) scrollCatalogTop() }
             }
         }
         chips.forEach { chipsRow.addView(it, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) }) }
@@ -986,11 +1011,13 @@ class MainActivity : Activity() {
             bindTile(tile, item)
             tile.setOnClickListener { onItem(item) }
             tile.setOnLongClickListener { itemMenu(item); true }
+            tile.setOnFocusChangeListener { _, has -> if (has) scrollCatalogTop() }
             continueRow.addView(tile, LinearLayout.LayoutParams(tileW, -2))
         }
         val all = makeTile()
         bindMore(all, entries.size)
         all.setOnClickListener { showAllTop() }
+        all.setOnFocusChangeListener { _, has -> if (has) scrollCatalogTop() }
         continueRow.addView(all, LinearLayout.LayoutParams(tileW, -2))
     }
 
@@ -1296,6 +1323,10 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- keys
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && vod != null && vodBar.visibility == View.VISIBLE) {
+            main.removeCallbacks(hideVodBarTask)
+            main.postDelayed(hideVodBarTask, 5000)
+        }
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) onBack()
             return true
@@ -1311,12 +1342,13 @@ class MainActivity : Activity() {
         if (overlayOpen() || panel.visibility == View.VISIBLE) return super.onKeyDown(keyCode, event)
         if (vod != null) return vodKey(keyCode, event)
         when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_PAGE_UP -> zap(1)
-            KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_PAGE_DOWN -> zap(-1)
-            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
-            KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_GUIDE, KeyEvent.KEYCODE_TV_INPUT -> showPanel()
-            KeyEvent.KEYCODE_DPAD_RIGHT -> openEpg()
-            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_INFO -> showInfo(false)
+            // ▼ = next channel in the list, ▲ = previous (like the side list and the guide)
+            KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_PAGE_DOWN -> zap(1)
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_PAGE_UP -> zap(-1)
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
+            KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_TV_INPUT -> showPanel()
+            KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_GUIDE -> openEpg()
+            KeyEvent.KEYCODE_INFO -> showInfo(false)
             in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> typeDigit(keyCode - KeyEvent.KEYCODE_0)
             else -> return super.onKeyDown(keyCode, event)
         }
@@ -1337,8 +1369,18 @@ class MainActivity : Activity() {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE -> togglePause()
             KeyEvent.KEYCODE_MEDIA_PLAY -> { p.playWhenReady = true; showVodBar() }
             KeyEvent.KEYCODE_MEDIA_PAUSE -> { p.playWhenReady = false; saveVodProgress(); showVodBar() }
-            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> seekBy(-step)
-            KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> seekBy(step)
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                val forward = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                when {
+                    // moving between the buttons: never seek, not even past the last one
+                    vodBar.visibility == View.VISIBLE && vodBar.hasFocus() -> {}
+                    // bar on screen but not from seeking: arrows go to the buttons
+                    vodBar.visibility == View.VISIBLE && !seekMode -> showVodBar(true)
+                    else -> seekBy(if (forward) step else -step)
+                }
+            }
+            KeyEvent.KEYCODE_MEDIA_REWIND -> seekBy(-step)
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> seekBy(step)
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_MENU -> showVodBar(true)
             else -> return super.onKeyDown(keyCode, event)
         }
@@ -2184,7 +2226,7 @@ class MainActivity : Activity() {
             isFocusable = true
             isClickable = true
             setOnClickListener { switchTop(0) }
-            setOnFocusChangeListener { _, has -> if (has) switchTop(0) }
+            setOnFocusChangeListener { _, has -> if (has) { switchTop(0); scrollCatalogTop() } }
         }
         topToggleLater = text(17f, bold = true).apply {
             this.text = "Ver más tarde"
@@ -2192,7 +2234,7 @@ class MainActivity : Activity() {
             isFocusable = true
             isClickable = true
             setOnClickListener { switchTop(1) }
-            setOnFocusChangeListener { _, has -> if (has) switchTop(1) }
+            setOnFocusChangeListener { _, has -> if (has) { switchTop(1); scrollCatalogTop() } }
         }
         topHead.addView(topToggleContinue, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
         topHead.addView(topToggleLater)
