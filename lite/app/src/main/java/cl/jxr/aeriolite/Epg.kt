@@ -32,6 +32,9 @@ class EpgView(context: Context, private val host: Host) : View(context) {
         fun logo(url: String): Bitmap?
         fun onSelected(channel: Channel, program: Program?)
         fun onPlay(channel: Channel)
+
+        /** Touch dragging down from the top of the grid (to close the guide). */
+        fun onPullDown(e: MotionEvent): Boolean
     }
 
     private fun dp(v: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics)
@@ -259,6 +262,39 @@ class EpgView(context: Context, private val host: Host) : View(context) {
         }
     })
 
+    private var pullCandidate = false
+    private var pulling = false
+    private var touchX = 0f
+    private var touchY = 0f
+
     @SuppressLint("ClickableViewAccessibility")
-    override fun onTouchEvent(event: MotionEvent): Boolean = gestures.onTouchEvent(event) || super.onTouchEvent(event)
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                touchX = event.x
+                touchY = event.y
+                pullCandidate = scrollY <= 0f
+                pulling = false
+            }
+            MotionEvent.ACTION_MOVE -> if (pullCandidate && !pulling) {
+                val dy = event.y - touchY
+                val dx = event.x - touchX
+                if (dy > dp(14f) && dy > kotlin.math.abs(dx) * 1.5f) {
+                    pulling = true
+                    val start = MotionEvent.obtain(event)
+                    start.action = MotionEvent.ACTION_DOWN
+                    host.onPullDown(start)
+                    start.recycle()
+                } else if (kotlin.math.abs(dx) > dp(14f) || dy < -dp(14f)) {
+                    pullCandidate = false
+                }
+            }
+        }
+        if (pulling) {
+            host.onPullDown(event)
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) pulling = false
+            return true
+        }
+        return gestures.onTouchEvent(event) || super.onTouchEvent(event)
+    }
 }

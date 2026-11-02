@@ -1,6 +1,11 @@
 package cl.jxr.aeriolite
 
 import android.app.Activity
+import android.app.PictureInPictureParams
+import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.os.Build
+import android.util.Rational
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Color
@@ -117,6 +122,7 @@ class MainActivity : Activity() {
     // Live views
     private lateinit var root: FrameLayout
     private lateinit var surface: SurfaceView
+    private lateinit var shutter: View
     private lateinit var status: TextView
     private lateinit var info: LinearLayout
     private lateinit var infoLogo: ImageView
@@ -170,6 +176,7 @@ class MainActivity : Activity() {
 
     // Generic option picker (audio, subtitles, aspect, item menu)
     private lateinit var pickerBox: LinearLayout
+    private lateinit var pickerLayer: FrameLayout
     private lateinit var pickerTitle: TextView
     private lateinit var pickerList: ListView
     private var pickerOptions: List<String> = emptyList()
@@ -259,6 +266,46 @@ class MainActivity : Activity() {
             w != null -> playVod(w)
             browser.visibility == View.VISIBLE || setup.visibility == View.VISIBLE || account.visibility == View.VISIBLE -> {}
             channels.isNotEmpty() -> play(current)
+        }
+    }
+
+    // ---------------------------------------------------------------- picture in picture (phones only)
+
+    /** Only phones/tablets that support it; never on Android TV. */
+    private val pipAllowed by lazy {
+        Build.VERSION.SDK_INT >= 26 &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE) &&
+            !packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (!pipAllowed || Build.VERSION.SDK_INT < 26) return
+        val watching = player?.isPlaying == true && browser.visibility != View.VISIBLE &&
+            setup.visibility != View.VISIBLE && account.visibility != View.VISIBLE
+        if (!watching) return
+        try {
+            val ratio = if (videoW > 0 && videoH > 0) {
+                val r = (videoW * videoRatio / videoH).coerceIn(0.5f, 2.3f)
+                Rational((r * 1000).toInt(), 1000)
+            } else Rational(16, 9)
+            enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(ratio).build())
+        } catch (e: Exception) {
+            // device refused PiP; nothing else to do
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            hideInfo.run()
+            hideVodBar()
+            hideStatus()
+            panel.visibility = View.GONE
+            epgBox.visibility = View.GONE
+            pickerLayer.visibility = View.GONE
+            card.visibility = View.GONE
+            numberView.visibility = View.GONE
         }
     }
 
@@ -430,6 +477,10 @@ class MainActivity : Activity() {
                 if (vod != null) updateVodBar()
             }
 
+            override fun onRenderedFirstFrame() {
+                shutter.visibility = View.GONE
+            }
+
             override fun onCues(cueGroup: CueGroup) {
                 val t = cueGroup.cues.mapNotNull { it.text?.toString() }.joinToString("\n").trim()
                 subtitleText.text = t
@@ -462,6 +513,7 @@ class MainActivity : Activity() {
     private fun play(index: Int) {
         if (channels.isEmpty()) return
         saveVodProgress()
+        if (vod != null) shutter.visibility = View.VISIBLE
         vod = null
         hideVodBar()
         subtitleText.visibility = View.GONE
@@ -568,6 +620,7 @@ class MainActivity : Activity() {
         val url = if (w.episode) acc.episodeUrl(w.id, w.ext) else acc.movieUrl(w.id, w.ext)
         val item = MediaItem.Builder().setUri(url)
         if (w.ext.equals("m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
+        shutter.visibility = View.VISIBLE
         val p = ensurePlayer()
         p.setMediaItem(item.build())
         val saved = history.get(w.key)
@@ -648,7 +701,7 @@ class MainActivity : Activity() {
     }
 
     private val hideVodBarTask = Runnable {
-        if (player?.isPlaying == true && pickerBox.visibility != View.VISIBLE) {
+        if (player?.isPlaying == true && pickerLayer.visibility != View.VISIBLE) {
             vodBar.visibility = View.GONE
             root.requestFocus()
         }
@@ -707,6 +760,7 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- tabs
 
     private fun onTab(tab: Int) {
+        closePicker(restoreFocus = false)
         when (tab) {
             TAB_LIVE -> {
                 if (browser.visibility == View.VISIBLE) closeBrowser()
@@ -771,6 +825,7 @@ class MainActivity : Activity() {
         hideKeyboard()
         browser.visibility = View.GONE
         root.requestFocus()
+        shutter.visibility = View.VISIBLE
         if (channels.isNotEmpty()) play(current)
     }
 
@@ -1243,7 +1298,7 @@ class MainActivity : Activity() {
     }
 
     private fun overlayOpen() = setup.visibility == View.VISIBLE || account.visibility == View.VISIBLE ||
-        browser.visibility == View.VISIBLE || filterBox.visibility == View.VISIBLE || pickerBox.visibility == View.VISIBLE ||
+        browser.visibility == View.VISIBLE || filterBox.visibility == View.VISIBLE || pickerLayer.visibility == View.VISIBLE ||
         epgBox.visibility == View.VISIBLE
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -1344,19 +1399,42 @@ class MainActivity : Activity() {
         pickerAction = action
         pickerAdapter.notifyDataSetChanged()
         main.removeCallbacks(hideVodBarTask)
-        pickerBox.alpha = 0f
-        pickerBox.visibility = View.VISIBLE
-        pickerBox.animate().alpha(1f).setDuration(160).start()
+        // While a movie plays, open in the upper half so the control bar stays visible.
+        val h = root.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val rowH = dp(46)
+        val maxList = if (vod != null) (h * 0.5f).toInt() - dp(90) else (h * 0.7f).toInt() - dp(90)
+        (pickerList.layoutParams as LinearLayout.LayoutParams).height =
+            (options.size * (rowH + 1)).coerceAtMost(maxList.coerceAtLeast(rowH * 2))
+        (pickerBox.layoutParams as FrameLayout.LayoutParams).apply {
+            gravity = if (vod != null) Gravity.TOP or Gravity.CENTER_HORIZONTAL else Gravity.CENTER
+            topMargin = if (vod != null) dp(24) else 0
+        }
+        pickerBox.requestLayout()
+        pickerLayer.animate().cancel()
+        pickerLayer.alpha = 0f
+        pickerBox.translationY = -dp(16).toFloat()
+        pickerLayer.visibility = View.VISIBLE
+        pickerLayer.animate().alpha(1f).setDuration(170).start()
+        pickerBox.animate().translationY(0f).setDuration(170).start()
         pickerList.requestFocus()
         pickerList.setSelection(selected.coerceAtLeast(0))
     }
 
-    private fun closePicker() {
-        pickerBox.visibility = View.GONE
+    /** Fades the menu out; [restoreFocus] = false when another screen is taking over. */
+    private fun closePicker(restoreFocus: Boolean = true) {
+        if (pickerLayer.visibility != View.VISIBLE) return
         pickerAction = null
-        val back = pickerReturnFocus
-        if (back != null && back.isShown) back.requestFocus() else root.requestFocus()
-        if (vod != null) showVodBar()
+        pickerLayer.animate().cancel()
+        pickerLayer.animate().alpha(0f).setDuration(160).withEndAction {
+            pickerLayer.visibility = View.GONE
+            pickerLayer.alpha = 1f
+        }.start()
+        pickerBox.animate().translationY(-dp(12).toFloat()).setDuration(160).start()
+        if (restoreFocus) {
+            val back = pickerReturnFocus
+            if (back != null && back.isShown) back.requestFocus() else root.requestFocus()
+            if (vod != null) showVodBar()
+        }
     }
 
     // ---------------------------------------------------------------- long press menu
@@ -1397,7 +1475,7 @@ class MainActivity : Activity() {
 
     private fun onBack() {
         when {
-            pickerBox.visibility == View.VISIBLE -> closePicker()
+            pickerLayer.visibility == View.VISIBLE -> closePicker()
             epgBox.visibility == View.VISIBLE -> closeEpg()
             filterBox.visibility == View.VISIBLE -> closeFilter()
             account.visibility == View.VISIBLE -> {
@@ -1585,6 +1663,8 @@ class MainActivity : Activity() {
         val currentRow = rows.indexOfFirst { it.number == channels.getOrNull(current)?.number }.coerceAtLeast(0)
         epgView.setData(rows, currentRow)
         if (guide.isEmpty()) refreshGuide(false)
+        epgBox.animate().cancel()
+        epgClosing = false
         epgBox.visibility = View.VISIBLE
         epgBox.translationY = root.height * 0.3f
         epgBox.alpha = 0f
@@ -1592,9 +1672,43 @@ class MainActivity : Activity() {
         epgView.requestFocus()
     }
 
+    private var epgClosing = false
+
     private fun closeEpg() {
-        epgBox.visibility = View.GONE
+        if (epgBox.visibility != View.VISIBLE || epgClosing) return
+        epgClosing = true
         root.requestFocus()
+        epgBox.animate().cancel()
+        epgBox.animate().translationY(epgBox.height.toFloat() * 0.6f).alpha(0f).setDuration(220).withEndAction {
+            epgBox.visibility = View.GONE
+            epgBox.translationY = 0f
+            epgBox.alpha = 1f
+            epgClosing = false
+        }.start()
+    }
+
+    /** Finger dragging the guide down: it follows the finger; far enough (or fast) closes it. */
+    private var epgDragY = 0f
+    private var epgDragging = false
+    private fun epgDrag(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { epgDragY = e.rawY; epgDragging = false }
+            MotionEvent.ACTION_MOVE -> {
+                val dy = e.rawY - epgDragY
+                if (!epgDragging && dy > slop * 2) epgDragging = true
+                if (epgDragging) epgBox.translationY = dy.coerceAtLeast(0f)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (epgDragging) {
+                    if (epgBox.translationY > dp(70)) closeEpg()
+                    else epgBox.animate().translationY(0f).setDuration(160).start()
+                }
+                val was = epgDragging
+                epgDragging = false
+                return was
+            }
+        }
+        return epgDragging
     }
 
     private val epgHost = object : EpgView.Host {
@@ -1619,6 +1733,8 @@ class MainActivity : Activity() {
                 epgDesc.text = program.desc
             }
         }
+
+        override fun onPullDown(e: MotionEvent) = epgDrag(e)
 
         override fun onPlay(channel: Channel) {
             val index = channels.indexOfFirst { it.number == channel.number }
@@ -1662,6 +1778,7 @@ class MainActivity : Activity() {
     }
 
     private fun showPanel() {
+        closePicker(restoreFocus = false)
         if (channels.isEmpty()) {
             showSetup(null)
             return
@@ -1857,6 +1974,8 @@ class MainActivity : Activity() {
         }
         surface = SurfaceView(this)
         root.addView(surface, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+        shutter = View(this).apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
+        root.addView(shutter, FrameLayout.LayoutParams(-1, -1))
 
         // Card of the channel that slides in while swiping
         card = LinearLayout(this).apply {
@@ -2227,6 +2346,9 @@ class MainActivity : Activity() {
         epgInfo.addView(epgTime)
         epgInfo.addView(epgDesc)
         epgHead.addView(epgInfo, LinearLayout.LayoutParams(0, -2, 1f))
+        epgHead.setOnTouchListener { _, e -> epgDrag(e); true }
+        epgBox.addView(View(this).apply { background = box(0x66FFFFFF, 3) },
+            LinearLayout.LayoutParams(dp(44), dp(5)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(6) })
         epgHead.addView(text(16f, bold = true).apply {
             this.text = "Cerrar"
             gravity = Gravity.CENTER
@@ -2274,7 +2396,14 @@ class MainActivity : Activity() {
             }
         }
         pickerBox.addView(pickerList, LinearLayout.LayoutParams(-1, -2))
-        root.addView(pickerBox, FrameLayout.LayoutParams(dp(440), -2, Gravity.CENTER))
+        pickerLayer = FrameLayout(this).apply {
+            setBackgroundColor(0x55000000)
+            isClickable = true
+            visibility = View.GONE
+            setOnClickListener { closePicker() }
+        }
+        pickerLayer.addView(pickerBox, FrameLayout.LayoutParams(dp(460), -2, Gravity.CENTER))
+        root.addView(pickerLayer, FrameLayout.LayoutParams(-1, -1))
 
         // Playlist setup screen
         setup = LinearLayout(this).apply {
@@ -2541,7 +2670,11 @@ class MainActivity : Activity() {
         override fun getItem(position: Int): Any? = pickerOptions.getOrNull(position)
         override fun getItemId(position: Int) = position.toLong()
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val tv = (convertView as? TextView) ?: text(19f).apply { setPadding(dp(12), dp(11), dp(12), dp(11)) }
+            val tv = (convertView as? TextView) ?: text(18f).apply {
+                setPadding(dp(12), 0, dp(12), 0)
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = android.widget.AbsListView.LayoutParams(-1, dp(46))
+            }
             val sel = position == pickerSelected
             tv.text = (if (pickerSelected >= 0) (if (sel) "●   " else "○   ") else "") + pickerOptions[position]
             tv.setTextColor(if (sel) ACCENT else Color.WHITE)
