@@ -580,7 +580,6 @@ class MainActivity : Activity() {
             grid.requestFocus()
         }
     }
-    }
 
     private fun seekBy(deltaMs: Long) {
         val p = player ?: return
