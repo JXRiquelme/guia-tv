@@ -32,6 +32,7 @@ import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
@@ -68,6 +69,10 @@ class MainActivity : Activity() {
         const val TAB_LIVE = 0
         const val TAB_MOVIES = 1
         const val TAB_SERIES = 2
+
+        const val MODE_CATEGORY = 0
+        const val MODE_CONTINUE = 1
+        const val MODE_SEARCH = 2
 
         const val ACCENT = 0xFF7FD3FF.toInt()
         const val MUTED = 0xFFB8C7F0.toInt()
@@ -148,32 +153,39 @@ class MainActivity : Activity() {
     // Movies / series browser
     private lateinit var browser: LinearLayout
     private lateinit var browserTabs: List<TextView>
-    private lateinit var browserSub: TextView
+    private lateinit var grid: ListView
+    private lateinit var continueBox: LinearLayout
+    private lateinit var continueRow: LinearLayout
+    private lateinit var chipsScroll: HorizontalScrollView
+    private lateinit var chipsRow: LinearLayout
     private lateinit var browserSearch: EditText
-    private lateinit var catList: ListView
-    private lateinit var itemList: ListView
+    private lateinit var gridLabel: TextView
     private lateinit var browserMessage: TextView
-    private val catAdapter = CategoryAdapter()
-    private val itemAdapter = ItemAdapter()
+    private lateinit var seriesView: LinearLayout
+    private lateinit var seriesPoster: ImageView
+    private lateinit var seriesTitle: TextView
+    private lateinit var seriesInfo: TextView
+    private lateinit var episodeList: ListView
+    private val rowAdapter = GridRowAdapter()
+    private val episodeAdapter = EpisodeAdapter()
     private var browserSeries = false
     private var pendingSeries = false
     private val categoryCache = HashMap<Boolean, List<Category>>()
     private val itemCache = HashMap<String, List<VodItem>>()
     private val catalogCache = HashMap<Boolean, List<VodItem>>()
+    private val selectedCat = HashMap<Boolean, Category>()
     private var cats: List<Category> = emptyList()
     private var visibleCats: List<Category> = emptyList()
-    private var hasContinueRow = false
-    private var rows: List<Any> = emptyList()
-    private var rowsLabel = ""
+    private var chips: List<TextView> = emptyList()
+
+    /** What the grid shows: VodItem or Watch entries. */
+    private var items: List<Any> = emptyList()
+    private var gridMode = MODE_CATEGORY
     private var openSeries: VodItem? = null
-    private var seriesBackRows: List<Any> = emptyList()
-    private var seriesBackLabel = ""
-    private var seriesBackSelection = 0
     private var episodes: List<Episode> = emptyList()
     private var loadToken = 0
-    private var searchActive = false
-    private var rowsBeforeSearch: List<Any> = emptyList()
-    private var labelBeforeSearch = ""
+    private var tileW = 0
+    private var posterH = 0
 
     // Hide-categories dialog
     private lateinit var filterBox: LinearLayout
@@ -556,13 +568,18 @@ class MainActivity : Activity() {
         vod = null
         stopPlayback()
         hideVodBar()
-        showBrowser()
-        if (rows.isNotEmpty()) {
-            itemAdapter.notifyDataSetChanged()
-            itemList.requestFocus()
+        browser.visibility = View.VISIBLE
+        browser.alpha = 0f
+        browser.animate().alpha(1f).setDuration(200).start()
+        refreshContinue()
+        rowAdapter.notifyDataSetChanged()
+        if (seriesView.visibility == View.VISIBLE) {
+            episodeAdapter.notifyDataSetChanged()
+            episodeList.requestFocus()
         } else {
-            catList.requestFocus()
+            grid.requestFocus()
         }
+    }
     }
 
     private fun seekBy(deltaMs: Long) {
@@ -637,7 +654,7 @@ class MainActivity : Activity() {
     private fun markTabs(tabs: List<TextView>, active: Int) {
         tabs.forEachIndexed { i, t ->
             t.setTextColor(if (i == active) ACCENT else Color.WHITE)
-            t.typeface = if (i == active) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            t.background = focusBg(10, if (i == active) 0x332F6FEB else Color.TRANSPARENT)
         }
     }
 
@@ -653,44 +670,67 @@ class MainActivity : Activity() {
         panel.visibility = View.GONE
         hideInfo.run()
         stopPlayback()
-        if (browserSeries != series || cats.isEmpty()) {
+        val switching = browserSeries != series || browser.visibility != View.VISIBLE
+        if (browserSeries != series) {
             browserSeries = series
-            openSeries = null
-            rows = emptyList()
-            rowsLabel = ""
-            cats = emptyList()
-            visibleCats = emptyList()
+            closeSeriesView()
             closeSearch(restore = false)
+            items = emptyList()
+            rowAdapter.notifyDataSetChanged()
+            cats = categoryCache[series].orEmpty()
         }
-        showBrowser()
-        if (cats.isEmpty()) loadCategories() else catList.requestFocus()
-    }
-
-    private fun showBrowser() {
-        markTabs(browserTabs, if (browserSeries) TAB_SERIES else TAB_MOVIES)
-        val base = if (browserSeries) "Series" else "Películas"
-        browserSub.text = when {
-            openSeries != null -> "$base  ›  ${openSeries!!.title}"
-            rowsLabel.isNotEmpty() -> "$base  ›  $rowsLabel"
-            else -> base
+        markTabs(browserTabs, if (series) TAB_SERIES else TAB_MOVIES)
+        if (browser.visibility != View.VISIBLE) {
+            browser.alpha = 0f
+            browser.visibility = View.VISIBLE
+            browser.animate().alpha(1f).setDuration(220).start()
+        } else if (switching) {
+            grid.alpha = 0f
+            grid.animate().alpha(1f).setDuration(220).start()
         }
-        hasContinueRow = history.continueWatching(browserSeries).isNotEmpty()
-        visibleCats = cats.filter { it.id !in hiddenCats(browserSeries) }
-        catAdapter.notifyDataSetChanged()
-        browser.visibility = View.VISIBLE
+        refreshContinue()
+        if (cats.isEmpty()) {
+            loadCategories()
+        } else {
+            buildChips()
+            if (items.isEmpty()) selectCategory(selectedCat[series] ?: defaultCategory())
+        }
+        grid.post {
+            val first = if (continueBox.visibility == View.VISIBLE) continueRow.getChildAt(0) else chips.firstOrNull()
+            (first ?: grid).requestFocus()
+        }
     }
 
     private fun closeBrowser() {
         hideKeyboard()
         browser.visibility = View.GONE
-        browserMessage.visibility = View.GONE
         root.requestFocus()
         if (channels.isNotEmpty()) play(current)
     }
 
-    private fun browserStatus(text: String?) {
+    private fun gridStatus(text: String?) {
         browserMessage.text = text.orEmpty()
         browserMessage.visibility = if (text == null) View.GONE else View.VISIBLE
+    }
+
+    /** Tile and poster size: 6 columns across the width, vertical 2:3 posters. */
+    private fun measureTiles() {
+        val width = (if (grid.width > 0) grid.width else root.width - dp(48)).coerceAtLeast(dp(300))
+        tileW = width / 6
+        posterH = (tileW - dp(14)) * 3 / 2
+    }
+
+    private fun defaultCategory(): Category? {
+        val list = visibleCats
+        if (list.isEmpty()) return null
+        fun key(c: Category) = Search.normalize(c.name).trim()
+        return if (browserSeries) {
+            list.firstOrNull { key(it) == "hbo" } ?: list.firstOrNull { key(it).contains("hbo") } ?: list.first()
+        } else {
+            list.firstOrNull { key(it) == "estrenos" }
+                ?: list.firstOrNull { key(it).contains("estreno") && !key(it).contains("cam") }
+                ?: list.first()
+        }
     }
 
     private fun loadCategories(then: (() -> Unit)? = null) {
@@ -698,81 +738,130 @@ class MainActivity : Activity() {
         val series = browserSeries
         categoryCache[series]?.let {
             cats = it
-            showBrowser()
-            catList.requestFocus()
+            buildChips()
             then?.invoke()
             return
         }
         val token = ++loadToken
-        browserStatus("Cargando categorías…")
-        catList.requestFocus()
+        gridStatus("Cargando categorías…")
         io.execute {
             val result = runCatching { Xtream.categories(acc, series) }
             main.post {
-                if (token != loadToken) return@post
+                if (token != loadToken || series != browserSeries) return@post
                 result.onSuccess {
                     categoryCache[series] = it
                     cats = it
-                    showBrowser()
-                    browserStatus(if (it.isEmpty()) "El proveedor no tiene categorías aquí." else "Elige una categoría.")
-                    catList.requestFocus()
-                    catList.setSelection(0)
-                    then?.invoke()
+                    buildChips()
+                    if (then != null) then() else selectCategory(selectedCat[series] ?: defaultCategory())
                 }.onFailure {
-                    browserStatus("No se pudo cargar: ${it.message}\nOK en una categoría para reintentar.")
+                    gridStatus("No se pudo cargar: ${it.message}")
                 }
             }
         }
     }
 
-    private fun onCategory(position: Int) {
-        openSeries = null
+    /** Horizontal row of category chips (hidden ones left out). */
+    private fun buildChips() {
+        visibleCats = cats.filter { it.id !in hiddenCats(browserSeries) }
+        chipsRow.removeAllViews()
+        chips = visibleCats.map { cat ->
+            text(16f).apply {
+                this.text = cat.name
+                maxWidth = dp(260)
+                setPadding(dp(16), dp(7), dp(16), dp(7))
+                isFocusable = true
+                isClickable = true
+                setOnClickListener { selectCategory(cat) }
+            }
+        }
+        chips.forEach { chipsRow.addView(it, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) }) }
+        markChips()
+    }
+
+    private fun markChips() {
+        val sel = if (gridMode == MODE_CATEGORY) selectedCat[browserSeries]?.id else null
+        chips.forEachIndexed { i, chip ->
+            val active = visibleCats.getOrNull(i)?.id == sel
+            chip.background = focusBg(18, if (active) 0xFF3B5BA8.toInt() else 0x22FFFFFF)
+            chip.setTextColor(if (active) Color.WHITE else MUTED)
+        }
+    }
+
+    private fun selectCategory(cat: Category?) {
         closeSearch(restore = false)
-        if (hasContinueRow && position == 0) {
-            setRows(history.continueWatching(browserSeries), "Seguir viendo")
-            browserStatus(null)
-            showBrowser()
-            itemList.requestFocus()
+        if (cat == null) {
+            gridStatus(if (cats.isEmpty()) "El proveedor no tiene categorías aquí." else "Todas las categorías están ocultas (usa el filtro).")
+            setItems(emptyList(), "")
             return
         }
-        if (cats.isEmpty()) {
-            loadCategories()
-            return
-        }
-        val cat = visibleCats.getOrNull(position - if (hasContinueRow) 1 else 0) ?: return
-        val acc = xtream() ?: return
         val series = browserSeries
+        selectedCat[series] = cat
+        gridMode = MODE_CATEGORY
+        markChips()
+        visibleCats.indexOfFirst { it.id == cat.id }.takeIf { it >= 0 }?.let { idx ->
+            chips.getOrNull(idx)?.let { chip -> chipsScroll.post { chipsScroll.smoothScrollTo((chip.left - dp(40)).coerceAtLeast(0), 0) } }
+        }
         val key = "$series:${cat.id}"
         itemCache[key]?.let {
-            setRows(it, cat.name)
-            showBrowser()
-            browserStatus(if (it.isEmpty()) "Categoría vacía." else null)
-            itemList.requestFocus()
+            setItems(it, cat.name)
+            gridStatus(if (it.isEmpty()) "Categoría vacía." else null)
             return
         }
+        val acc = xtream() ?: return
         val token = ++loadToken
-        setRows(emptyList(), cat.name)
-        showBrowser()
-        browserStatus("Cargando ${cat.name}…")
+        setItems(emptyList(), cat.name)
+        gridStatus("Cargando ${cat.name}…")
         io.execute {
             val result = runCatching { Xtream.items(acc, series, cat.id) }
             main.post {
-                if (token != loadToken) return@post
+                result.onSuccess { itemCache[key] = it }
+                if (token != loadToken || series != browserSeries) return@post
                 result.onSuccess {
-                    itemCache[key] = it
-                    setRows(it, cat.name)
-                    browserStatus(if (it.isEmpty()) "Categoría vacía." else null)
-                    if (it.isNotEmpty()) itemList.requestFocus()
-                }.onFailure { browserStatus("No se pudo cargar: ${it.message}") }
+                    setItems(it, cat.name)
+                    gridStatus(if (it.isEmpty()) "Categoría vacía." else null)
+                }.onFailure { gridStatus("No se pudo cargar: ${it.message}") }
             }
         }
     }
 
-    private fun setRows(newRows: List<Any>, label: String) {
-        rows = newRows
-        rowsLabel = label
-        itemAdapter.notifyDataSetChanged()
-        itemList.setSelection(0)
+    private fun setItems(list: List<Any>, label: String) {
+        items = list
+        gridLabel.text = label
+        gridLabel.visibility = if (label.isEmpty()) View.GONE else View.VISIBLE
+        rowAdapter.notifyDataSetChanged()
+        grid.alpha = 0.35f
+        grid.animate().alpha(1f).setDuration(200).start()
+    }
+
+    /** "Seguir viendo": up to 5 posters plus a "Ver todo" tile. */
+    private fun refreshContinue() {
+        measureTiles()
+        val entries = history.continueWatching(browserSeries)
+        continueRow.removeAllViews()
+        if (entries.isEmpty()) {
+            continueBox.visibility = View.GONE
+            return
+        }
+        continueBox.visibility = View.VISIBLE
+        entries.take(5).forEach { w ->
+            val tile = makeTile()
+            bindTile(tile, w)
+            tile.setOnClickListener { onItem(w) }
+            continueRow.addView(tile, LinearLayout.LayoutParams(tileW, -2))
+        }
+        val all = makeTile()
+        bindMore(all, entries.size)
+        all.setOnClickListener { showAllContinue() }
+        continueRow.addView(all, LinearLayout.LayoutParams(tileW, -2))
+    }
+
+    private fun showAllContinue() {
+        closeSearch(restore = false)
+        gridMode = MODE_CONTINUE
+        markChips()
+        setItems(history.continueWatching(browserSeries), "Seguir viendo · todo")
+        gridStatus(null)
+        grid.post { grid.setSelectionFromTop(grid.headerViewsCount, 0) }
     }
 
     private fun episodeWatch(series: VodItem, e: Episode) = Watch(
@@ -785,87 +874,91 @@ class MainActivity : Activity() {
         seriesId = series.id,
     )
 
-    private fun onItem(position: Int) {
+    private fun onItem(item: Any?) {
         hideKeyboard()
-        when (val row = rows.getOrNull(position)) {
+        when (item) {
             is Watch -> {
-                if (row.episode && row.seriesId.isNotEmpty() && openSeries?.id != row.seriesId) {
-                    loadEpisodes(VodItem(true, row.seriesId, row.title, row.poster, row.ext, "", ""), playAfter = row)
+                if (item.episode && item.seriesId.isNotEmpty() && openSeries?.id != item.seriesId) {
+                    loadEpisodes(VodItem(true, item.seriesId, item.title, item.poster, item.ext, "", ""), playAfter = item)
                 } else {
-                    playVod(row)
+                    playVod(item)
                 }
             }
-            is Episode -> openSeries?.let { playVod(episodeWatch(it, row)) }
-            is VodItem -> if (row.series) {
-                seriesBackRows = rows
-                seriesBackLabel = rowsLabel
-                seriesBackSelection = position
-                loadEpisodes(row, null)
-            } else {
-                playVod(Watch(false, row.id, row.ext, row.title, row.year, row.poster))
-            }
+            is VodItem -> if (item.series) openSeriesView(item)
+            else playVod(Watch(false, item.id, item.ext, item.title, item.year, item.poster))
         }
+    }
+
+    private fun openSeriesView(series: VodItem) {
+        openSeries = series
+        episodes = emptyList()
+        episodeAdapter.notifyDataSetChanged()
+        logos.load(series.poster, seriesPoster)
+        seriesTitle.text = series.title
+        seriesInfo.text = listOf(series.year, series.rating.ifEmpty { "" }.let { if (it.isEmpty()) "" else "★ $it" })
+            .filter { it.isNotEmpty() }.joinToString("   ·   ")
+        seriesView.alpha = 0f
+        seriesView.translationX = dp(40).toFloat()
+        seriesView.visibility = View.VISIBLE
+        seriesView.animate().alpha(1f).translationX(0f).setDuration(220).start()
+        loadEpisodes(series, null)
+    }
+
+    private fun closeSeriesView() {
+        if (!::seriesView.isInitialized) return
+        seriesView.visibility = View.GONE
+        openSeries = null
+        episodes = emptyList()
     }
 
     private fun loadEpisodes(series: VodItem, playAfter: Watch?) {
         val acc = xtream() ?: return
         val token = ++loadToken
         if (playAfter == null) {
-            openSeries = series
-            setRows(emptyList(), rowsLabel)
-            showBrowser()
-            browserStatus("Cargando episodios…")
+            seriesInfo.text = "Cargando episodios…"
         }
         io.execute {
             val result = runCatching { Xtream.episodes(acc, series.id) }
             main.post {
                 if (token != loadToken) return@post
                 if (playAfter != null) {
-                    // Coming from "Seguir viendo": remember the series, then play.
-                    seriesBackRows = rows
-                    seriesBackLabel = rowsLabel
-                    seriesBackSelection = itemList.selectedItemPosition.coerceAtLeast(0)
+                    // From "Seguir viendo": keep the series so "next episode" works.
                     openSeries = series
                     episodes = result.getOrDefault(emptyList())
-                    if (episodes.isNotEmpty()) {
-                        rows = episodes
-                        itemAdapter.notifyDataSetChanged()
-                        val idx = episodes.indexOfFirst { it.id == playAfter.id }
-                        if (idx >= 0) itemList.setSelection(idx)
-                    }
+                    episodeAdapter.notifyDataSetChanged()
+                    logos.load(series.poster, seriesPoster)
+                    seriesTitle.text = series.title
+                    seriesInfo.text = "${episodes.size} episodios"
+                    seriesView.visibility = View.VISIBLE
+                    episodes.indexOfFirst { it.id == playAfter.id }.takeIf { it >= 0 }?.let { episodeList.setSelection(it) }
                     playVod(playAfter)
                     return@post
                 }
                 result.onSuccess {
                     episodes = it
-                    rows = it
-                    itemAdapter.notifyDataSetChanged()
-                    showBrowser()
-                    browserStatus(if (it.isEmpty()) "Esta serie no tiene episodios." else null)
+                    episodeAdapter.notifyDataSetChanged()
+                    val seasons = it.map { e -> e.season }.distinct().size
+                    seriesInfo.text = if (it.isEmpty()) "Esta serie no tiene episodios."
+                    else "$seasons temporada${if (seasons == 1) "" else "s"}  ·  ${it.size} episodios"
                     val resumeIdx = it.indexOfFirst { e -> history.get("e:" + e.id)?.let { w -> !w.finished } == true }
-                    itemList.setSelection(resumeIdx.coerceAtLeast(0))
-                    itemList.requestFocus()
-                }.onFailure { browserStatus("No se pudo cargar: ${it.message}") }
+                    episodeList.setSelection(resumeIdx.coerceAtLeast(0))
+                    episodeList.requestFocus()
+                }.onFailure { seriesInfo.text = "No se pudo cargar: ${it.message}" }
             }
         }
     }
 
     private fun browserBack() {
         when {
-            openSeries != null -> {
-                openSeries = null
-                episodes = emptyList()
+            seriesView.visibility == View.VISIBLE -> {
                 loadToken++
-                browserStatus(null)
-                rows = seriesBackRows
-                rowsLabel = seriesBackLabel
-                itemAdapter.notifyDataSetChanged()
-                itemList.setSelection(seriesBackSelection)
-                showBrowser()
-                itemList.requestFocus()
+                closeSeriesView()
+                refreshContinue()
+                rowAdapter.notifyDataSetChanged()
+                grid.requestFocus()
             }
-            searchActive -> closeSearch(restore = true)
-            itemList.hasFocus() -> catList.requestFocus()
+            gridMode == MODE_SEARCH || browserSearch.visibility == View.VISIBLE -> closeSearch(restore = true)
+            gridMode == MODE_CONTINUE -> selectCategory(selectedCat[browserSeries] ?: defaultCategory())
             else -> {
                 loadToken++
                 closeBrowser()
@@ -888,20 +981,14 @@ class MainActivity : Activity() {
 
     private fun closeSearch(restore: Boolean) {
         main.removeCallbacks(searchDebounce)
-        if (::browserSearch.isInitialized) {
-            browserSearch.visibility = View.GONE
-            hideKeyboard()
+        if (!::browserSearch.isInitialized) return
+        val wasSearching = gridMode == MODE_SEARCH
+        browserSearch.visibility = View.GONE
+        hideKeyboard()
+        if (wasSearching) {
+            gridMode = MODE_CATEGORY
+            if (restore) selectCategory(selectedCat[browserSeries] ?: defaultCategory())
         }
-        if (searchActive && restore) {
-            loadToken++
-            rows = rowsBeforeSearch
-            rowsLabel = labelBeforeSearch
-            itemAdapter.notifyDataSetChanged()
-            browserStatus(null)
-            showBrowser()
-            itemList.requestFocus()
-        }
-        searchActive = false
     }
 
     private val searchDebounce = Runnable { runSearch(browserSearch.text.toString()) }
@@ -911,35 +998,29 @@ class MainActivity : Activity() {
         if (query.length < 2) return
         val acc = xtream() ?: return
         val series = browserSeries
-        if (!searchActive) {
-            rowsBeforeSearch = rows
-            labelBeforeSearch = rowsLabel
-            searchActive = true
-        }
-        openSeries = null
+        gridMode = MODE_SEARCH
+        markChips()
         val token = ++loadToken
         val show = { all: List<VodItem> ->
             val q = Search.normalize(query)
             val hidden = hiddenCats(series)
             val found = all.filter { it.categoryId !in hidden && it.searchKey.contains(q) }
-            setRows(found.take(400), "Buscar “$query”")
-            showBrowser()
-            browserStatus(if (found.isEmpty()) "Sin resultados para “$query”." else null)
+            setItems(found.take(600), "Resultados para “$query” (${found.size})")
+            gridStatus(if (found.isEmpty()) "Sin resultados para “$query”." else null)
         }
         val cached = catalogCache[series]
         if (cached != null) {
             show(cached)
             return
         }
-        setRows(emptyList(), "Buscar “$query”")
-        showBrowser()
-        browserStatus("Buscando en todo el catálogo…\nLa primera búsqueda tarda un poco.")
+        setItems(emptyList(), "Buscando “$query”…")
+        gridStatus("Buscando en todo el catálogo…\nLa primera búsqueda tarda un poco.")
         io.execute {
             val result = runCatching { Xtream.items(acc, series, null) }
             main.post {
                 result.onSuccess { catalogCache[series] = it }
-                if (token != loadToken) return@post
-                result.onSuccess { show(it) }.onFailure { browserStatus("No se pudo buscar: ${it.message}") }
+                if (token != loadToken || series != browserSeries) return@post
+                result.onSuccess { show(it) }.onFailure { gridStatus("No se pudo buscar: ${it.message}") }
             }
         }
     }
@@ -999,7 +1080,9 @@ class MainActivity : Activity() {
         }
         hideKeyboard()
         filterAdapter.notifyDataSetChanged()
+        filterBox.alpha = 0f
         filterBox.visibility = View.VISIBLE
+        filterBox.animate().alpha(1f).setDuration(180).start()
         filterList.requestFocus()
         filterList.setSelection(0)
     }
@@ -1011,8 +1094,10 @@ class MainActivity : Activity() {
             rebuildShown()
             list.requestFocus()
         } else {
-            showBrowser()
-            catList.requestFocus()
+            buildChips()
+            val sel = selectedCat[browserSeries]
+            if (sel == null || sel.id in hiddenCats(browserSeries)) selectCategory(defaultCategory())
+            chips.firstOrNull()?.requestFocus()
         }
     }
 
@@ -1287,7 +1372,12 @@ class MainActivity : Activity() {
         hideInfo.run()
         markTabs(panelTabs, TAB_LIVE)
         adapter.notifyDataSetChanged()
-        panel.visibility = View.VISIBLE
+        if (panel.visibility != View.VISIBLE) {
+            panel.alpha = 0f
+            panel.translationX = -dp(60).toFloat()
+            panel.visibility = View.VISIBLE
+            panel.animate().alpha(1f).translationX(0f).setDuration(200).start()
+        }
         list.requestFocus()
         val pos = shown.indexOf(current).coerceAtLeast(0)
         list.setSelectionFromTop(pos, dp(140))
@@ -1390,11 +1480,11 @@ class MainActivity : Activity() {
         cornerRadius = dp(radius).toFloat()
     }
 
-    /** Blue when focused (remote) or pressed (touch), transparent otherwise. */
-    private fun focusBg(radius: Int = 10): Drawable = StateListDrawable().apply {
+    /** Blue when focused (remote) or pressed (touch), [base] otherwise. */
+    private fun focusBg(radius: Int = 10, base: Int = Color.TRANSPARENT): Drawable = StateListDrawable().apply {
         addState(intArrayOf(android.R.attr.state_focused), box(BLUE, radius))
         addState(intArrayOf(android.R.attr.state_pressed), box(BLUE, radius))
-        addState(intArrayOf(), ColorDrawable(Color.TRANSPARENT))
+        addState(intArrayOf(), if (base == Color.TRANSPARENT) ColorDrawable(Color.TRANSPARENT) else box(base, radius))
     }
 
     private fun input(hint: String, password: Boolean = false) = EditText(this).apply {
@@ -1427,26 +1517,26 @@ class MainActivity : Activity() {
         setOnClickListener { onClick() }
     }
 
-    /** "Canales  Películas  Series   [lupa] [filtro]" */
-    private fun topBar(onSearch: () -> Unit, onFilter: () -> Unit): Pair<LinearLayout, List<TextView>> {
+    /** "Canales  Películas  Series" (+ optional search / filter icons). Same fixed size everywhere. */
+    private fun topBar(onSearch: (() -> Unit)?, onFilter: (() -> Unit)?): Pair<LinearLayout, List<TextView>> {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         val tabs = listOf("Canales", "Películas", "Series").mapIndexed { i, label ->
-            text(21f).apply {
+            text(18f, bold = true).apply {
                 this.text = label
-                setPadding(dp(12), dp(8), dp(12), dp(8))
+                gravity = Gravity.CENTER
                 background = focusBg()
                 isFocusable = true
                 isClickable = true
                 setOnClickListener { onTab(i) }
             }
         }
-        tabs.forEach { bar.addView(it, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(4) }) }
+        tabs.forEach { bar.addView(it, LinearLayout.LayoutParams(dp(112), dp(42)).apply { rightMargin = dp(6) }) }
         bar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        bar.addView(iconButton(R.drawable.ic_search, onSearch), LinearLayout.LayoutParams(dp(44), dp(44)))
-        bar.addView(iconButton(R.drawable.ic_filter, onFilter), LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = dp(6) })
+        if (onSearch != null) bar.addView(iconButton(R.drawable.ic_search, onSearch), LinearLayout.LayoutParams(dp(44), dp(44)))
+        if (onFilter != null) bar.addView(iconButton(R.drawable.ic_filter, onFilter), LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = dp(6) })
         return bar to tabs
     }
 
@@ -1606,14 +1696,49 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             isClickable = true
             setBackgroundColor(0xFA081030.toInt())
-            setPadding(dp(28), dp(16), dp(28), dp(12))
+            setPadding(dp(24), dp(14), dp(24), dp(4))
             visibility = View.GONE
         }
-        val (browserBar, bTabs) = topBar({ toggleBrowserSearch() }, { openFilter(if (browserSeries) TAB_SERIES else TAB_MOVIES) })
+        val (browserBar, bTabs) = topBar(null, null)
         browserTabs = bTabs
-        browser.addView(browserBar, LinearLayout.LayoutParams(-1, -2))
-        browserSub = text(17f, MUTED)
-        browser.addView(browserSub, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4); bottomMargin = dp(8); leftMargin = dp(12) })
+        browser.addView(browserBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+        val content = FrameLayout(this)
+        grid = ListView(this).apply {
+            divider = null
+            dividerHeight = 0
+            selector = ColorDrawable(Color.TRANSPARENT)
+            itemsCanFocus = true
+            isVerticalScrollBarEnabled = false
+            clipToPadding = false
+            setPadding(0, 0, 0, dp(24))
+        }
+        // Header 1: "Seguir viendo"
+        continueBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        continueBox.addView(text(19f, bold = true).apply { this.text = "Seguir viendo" },
+            LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6); bottomMargin = dp(6) })
+        continueRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        continueBox.addView(continueRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })
+        grid.addHeaderView(continueBox, null, false)
+        // Header 2: categories + search + filter
+        val catalogHead = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val chipsLine = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        chipsScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = false
+        }
+        chipsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        chipsScroll.addView(chipsRow)
+        chipsLine.addView(chipsScroll, LinearLayout.LayoutParams(0, -2, 1f))
+        chipsLine.addView(iconButton(R.drawable.ic_search) { toggleBrowserSearch() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = dp(10) })
+        chipsLine.addView(iconButton(R.drawable.ic_filter) { openFilter(if (browserSeries) TAB_SERIES else TAB_MOVIES) },
+            LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = dp(6) })
+        catalogHead.addView(chipsLine, LinearLayout.LayoutParams(-1, -2))
         browserSearch = searchBox("Buscar en todo el catálogo").apply {
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -1627,35 +1752,62 @@ class MainActivity : Activity() {
                 main.removeCallbacks(searchDebounce)
                 runSearch(text.toString())
                 hideKeyboard()
-                if (rows.isNotEmpty()) itemList.requestFocus()
                 true
             }
         }
-        browser.addView(browserSearch, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
-        val body = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        catList = styledList().apply {
-            adapter = catAdapter
-            setOnItemClickListener { _, _, position, _ -> onCategory(position) }
-        }
-        body.addView(catList, LinearLayout.LayoutParams(dp(300), -1).apply { rightMargin = dp(18) })
-        val right = FrameLayout(this)
-        itemList = styledList().apply {
-            adapter = itemAdapter
-            setOnItemClickListener { _, _, position, _ -> onItem(position) }
-        }
-        right.addView(itemList, FrameLayout.LayoutParams(-1, -1))
-        browserMessage = text(20f, MUTED).apply {
-            maxLines = 4
+        catalogHead.addView(browserSearch, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        gridLabel = text(15f, MUTED).apply { visibility = View.GONE }
+        catalogHead.addView(gridLabel, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8); leftMargin = dp(6) })
+        browserMessage = text(18f, MUTED).apply {
+            maxLines = 3
             gravity = Gravity.CENTER
+            setPadding(0, dp(30), 0, dp(30))
             visibility = View.GONE
         }
-        right.addView(browserMessage, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
-        body.addView(right, LinearLayout.LayoutParams(0, -1, 1f))
-        browser.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
-        browser.addView(text(13f, HINT).apply {
-            this.text = "OK: abrir  ·  ◀ ▶: categorías / títulos  ·  ▲ arriba: pestañas, buscar y filtro  ·  Atrás: volver"
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        catalogHead.addView(browserMessage, LinearLayout.LayoutParams(-1, -2))
+        catalogHead.setPadding(0, 0, 0, dp(8))
+        grid.addHeaderView(catalogHead, null, false)
+        grid.adapter = rowAdapter
+        content.addView(grid, FrameLayout.LayoutParams(-1, -1))
+
+        // Series detail: poster + episodes
+        seriesView = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            isClickable = true
+            setBackgroundColor(0xFF081030.toInt())
+            visibility = View.GONE
+        }
+        val seriesLeft = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        seriesPoster = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = box(0xFF141C3A.toInt(), 8)
+        }
+        seriesLeft.addView(seriesPoster, LinearLayout.LayoutParams(dp(180), dp(270)))
+        seriesTitle = text(20f, bold = true).apply { maxLines = 3 }
+        seriesLeft.addView(seriesTitle, LinearLayout.LayoutParams(dp(180), -2).apply { topMargin = dp(10) })
+        seriesInfo = text(15f, MUTED).apply { maxLines = 3 }
+        seriesLeft.addView(seriesInfo, LinearLayout.LayoutParams(dp(180), -2).apply { topMargin = dp(4) })
+        seriesView.addView(seriesLeft, LinearLayout.LayoutParams(-2, -1).apply { rightMargin = dp(24) })
+        episodeList = styledList().apply {
+            adapter = episodeAdapter
+            setOnItemClickListener { _, _, position, _ ->
+                val s = openSeries ?: return@setOnItemClickListener
+                episodes.getOrNull(position)?.let { playVod(episodeWatch(s, it)) }
+            }
+        }
+        seriesView.addView(episodeList, LinearLayout.LayoutParams(0, -1, 1f))
+        content.addView(seriesView, FrameLayout.LayoutParams(-1, -1))
+        browser.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(browser, FrameLayout.LayoutParams(-1, -1))
+        grid.addOnLayoutChangeListener { _, l, _, r, _, ol, _, or, _ ->
+            if (r - l != or - ol) {
+                measureTiles()
+                if (browser.visibility == View.VISIBLE) {
+                    refreshContinue()
+                    rowAdapter.notifyDataSetChanged()
+                }
+            }
+        }
 
         numberView = text(48f, bold = true).apply {
             setPadding(dp(18), dp(6), dp(18), dp(6))
@@ -1750,7 +1902,6 @@ class MainActivity : Activity() {
         root.requestFocus()
     }
 
-    // ---------------------------------------------------------------- adapters
 
     private fun makeRow(logoW: Int, logoH: Int): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -1802,49 +1953,154 @@ class MainActivity : Activity() {
         }
     }
 
-    private inner class CategoryAdapter : BaseAdapter() {
-        override fun getCount() = visibleCats.size + if (hasContinueRow) 1 else 0
-        override fun getItem(position: Int): Any? = null
-        override fun getItemId(position: Int) = position.toLong()
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val tv = (convertView as? TextView) ?: text(19f).apply { setPadding(dp(12), dp(10), dp(12), dp(10)) }
-            tv.text = if (hasContinueRow && position == 0) "▶ Seguir viendo"
-            else visibleCats.getOrNull(position - if (hasContinueRow) 1 else 0)?.name.orEmpty()
-            return tv
+    // ---------------------------------------------------------------- poster tiles
+
+    private fun makeTile(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        setPadding(dp(5), dp(5), dp(5), dp(5))
+        background = focusBg(10, Color.TRANSPARENT)
+        isFocusable = true
+        isClickable = true
+        val frame = FrameLayout(this@MainActivity)
+        val poster = ImageView(this@MainActivity).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = box(0xFF141C3A.toInt(), 8)
+        }
+        frame.addView(poster, FrameLayout.LayoutParams(-1, -1))
+        val placeholder = text(15f, MUTED).apply {
+            maxLines = 3
+            gravity = Gravity.CENTER
+            setPadding(dp(6), 0, dp(6), 0)
+        }
+        frame.addView(placeholder, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
+        val badge = text(12f, bold = true).apply {
+            setPadding(dp(6), dp(2), dp(6), dp(2))
+            background = box(0xCC000000.toInt(), 6)
+        }
+        frame.addView(badge, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply { rightMargin = dp(5); bottomMargin = dp(5) })
+        val bar = ProgressBar(this@MainActivity, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
+        frame.addView(bar, FrameLayout.LayoutParams(-1, dp(4), Gravity.BOTTOM))
+        addView(frame, LinearLayout.LayoutParams(-1, posterH.coerceAtLeast(dp(90))))
+        addView(text(13f, bold = true).apply {
+            maxLines = 2
+            gravity = Gravity.CENTER_HORIZONTAL
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(5) })
+        addView(text(12f, MUTED).apply { gravity = Gravity.CENTER_HORIZONTAL }, LinearLayout.LayoutParams(-1, -2))
+    }
+
+    private class TileParts(val frame: FrameLayout, val poster: ImageView, val placeholder: TextView,
+                            val badge: TextView, val bar: ProgressBar, val title: TextView, val sub: TextView)
+
+    private fun parts(tile: LinearLayout): TileParts {
+        val frame = tile.getChildAt(0) as FrameLayout
+        return TileParts(frame, frame.getChildAt(0) as ImageView, frame.getChildAt(1) as TextView,
+            frame.getChildAt(2) as TextView, frame.getChildAt(3) as ProgressBar,
+            tile.getChildAt(1) as TextView, tile.getChildAt(2) as TextView)
+    }
+
+    private fun bindTile(tile: LinearLayout, item: Any) {
+        val p = parts(tile)
+        val lp = p.frame.layoutParams
+        if (lp.height != posterH && posterH > 0) {
+            lp.height = posterH
+            p.frame.layoutParams = lp
+        }
+        p.poster.visibility = View.VISIBLE
+        when (item) {
+            is VodItem -> {
+                logos.load(item.poster, p.poster)
+                p.placeholder.text = if (item.poster.isEmpty()) item.title else ""
+                p.title.text = item.title
+                val saved = if (item.series) null else history.get("m:" + item.id)
+                val sub = when {
+                    saved?.finished == true -> "Vista"
+                    else -> item.year
+                }
+                p.sub.text = sub
+                p.sub.visibility = if (sub.isEmpty()) View.GONE else View.VISIBLE
+                p.badge.text = item.rating.take(3)
+                p.badge.visibility = if (item.rating.isEmpty()) View.GONE else View.VISIBLE
+                val part = saved?.takeIf { !it.finished && it.duration > 0 && it.position > 30_000 }
+                p.bar.visibility = if (part == null) View.GONE else View.VISIBLE
+                if (part != null) p.bar.progress = (part.position * 1000 / part.duration).toInt()
+            }
+            is Watch -> {
+                logos.load(item.poster, p.poster)
+                p.placeholder.text = if (item.poster.isEmpty()) item.title else ""
+                p.title.text = item.title
+                p.sub.text = if (item.episode) item.subtitle.substringBefore("  ") else "Quedaste en ${clock(item.position)}"
+                p.sub.visibility = View.VISIBLE
+                p.badge.visibility = View.GONE
+                p.bar.visibility = if (item.duration > 0) View.VISIBLE else View.GONE
+                if (item.duration > 0) p.bar.progress = (item.position * 1000 / item.duration).toInt()
+            }
         }
     }
 
-    private inner class ItemAdapter : BaseAdapter() {
-        override fun getCount() = rows.size
-        override fun getItem(position: Int): Any? = rows.getOrNull(position)
+    private fun bindMore(tile: LinearLayout, total: Int) {
+        val p = parts(tile)
+        logos.load("", p.poster)
+        p.placeholder.text = "Ver todo\n($total)"
+        p.placeholder.setTextColor(Color.WHITE)
+        p.title.text = ""
+        p.sub.visibility = View.GONE
+        p.badge.visibility = View.GONE
+        p.bar.visibility = View.GONE
+        val lp = p.frame.layoutParams
+        if (lp.height != posterH && posterH > 0) {
+            lp.height = posterH
+            p.frame.layoutParams = lp
+        }
+    }
+
+    // ---------------------------------------------------------------- adapters
+
+    /** Each list row holds 6 poster tiles. */
+    private inner class GridRowAdapter : BaseAdapter() {
+        override fun getCount() = (items.size + 5) / 6
+        override fun getItem(position: Int): Any? = null
+        override fun getItemId(position: Int) = position.toLong()
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+            if (tileW == 0) measureTiles()
+            val row = (convertView as? LinearLayout)?.takeIf { it.tag == posterH } ?: LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                tag = posterH
+                repeat(6) { addView(makeTile(), LinearLayout.LayoutParams(tileW, -2)) }
+            }
+            for (i in 0 until 6) {
+                val tile = row.getChildAt(i) as LinearLayout
+                val item = items.getOrNull(position * 6 + i)
+                if (item == null) {
+                    tile.visibility = View.INVISIBLE
+                    tile.setOnClickListener(null)
+                } else {
+                    tile.visibility = View.VISIBLE
+                    bindTile(tile, item)
+                    tile.setOnClickListener { onItem(item) }
+                }
+            }
+            return row
+        }
+    }
+
+    private inner class EpisodeAdapter : BaseAdapter() {
+        override fun getCount() = episodes.size
+        override fun getItem(position: Int): Any? = episodes.getOrNull(position)
         override fun getItemId(position: Int) = position.toLong()
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val row = (convertView as? LinearLayout) ?: makeRow(46, 66)
-            when (val r = rows[position]) {
-                is VodItem -> {
-                    val seen = !r.series && history.watched("m:" + r.id)
-                    val partial = if (r.series) null else history.get("m:" + r.id)?.takeIf { !it.finished && it.position > 30_000 }
-                    val sub = listOfNotNull(
-                        r.year.ifEmpty { null },
-                        r.rating.ifEmpty { null }?.let { "★ $it" },
-                        if (seen) "Vista" else null,
-                        partial?.let { "Quedaste en ${clock(it.position)}" },
-                    ).joinToString("   ·   ")
-                    fillRow(row, "", r.poster, r.title, sub)
-                }
-                is Episode -> {
-                    val w = history.get("e:" + r.id)
-                    val sub = when {
-                        w == null -> ""
-                        w.finished -> "Visto"
-                        w.position > 30_000 -> "Quedaste en ${clock(w.position)}"
-                        else -> ""
-                    }
-                    fillRow(row, r.number.toString(), r.image, "T${r.season} · ${r.title}", sub)
-                }
-                is Watch -> fillRow(row, "", r.poster, r.title,
-                    listOf(r.subtitle, "Quedaste en ${clock(r.position)}").filter { it.isNotEmpty() }.joinToString("   ·   "))
+            val row = (convertView as? LinearLayout) ?: makeRow(96, 54)
+            val e = episodes[position]
+            val w = history.get("e:" + e.id)
+            val sub = when {
+                w == null -> ""
+                w.finished -> "Visto"
+                w.position > 30_000 -> "Quedaste en ${clock(w.position)}"
+                else -> ""
             }
+            val showSeason = position == 0 || episodes[position - 1].season != e.season
+            fillRow(row, e.number.toString(), e.image, (if (showSeason) "Temporada ${e.season} · " else "") + e.title, sub)
             return row
         }
     }
