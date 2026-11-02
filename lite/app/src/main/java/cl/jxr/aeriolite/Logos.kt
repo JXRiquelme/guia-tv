@@ -50,6 +50,23 @@ class Logos(context: Context) {
         }
     }
 
+    /** Cached bitmap for custom-drawn views; starts loading and calls [onReady] when it arrives. */
+    fun bitmap(url: String, onReady: () -> Unit): Bitmap? {
+        if (url.isEmpty()) return null
+        memory.get(url)?.let { return it }
+        if (url in failed || !pending.add(url)) return null
+        pool.execute {
+            val bmp = try { fetch(url) } catch (e: Throwable) { null }
+            main.post {
+                pending.remove(url)
+                if (bmp == null) failed.add(url) else { memory.put(url, bmp); onReady() }
+            }
+        }
+        return null
+    }
+
+    private val pending = HashSet<String>()
+
     private fun fetch(url: String): Bitmap? {
         val file = File(dir, md5(url))
         if (!file.exists() || file.length() == 0L) Net.download(url, file)

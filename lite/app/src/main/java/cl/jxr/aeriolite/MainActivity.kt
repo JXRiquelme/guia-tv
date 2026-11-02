@@ -160,6 +160,14 @@ class MainActivity : Activity() {
     private lateinit var vodControls: List<TextView>
     private lateinit var subtitleText: TextView
 
+    // Program guide grid
+    private lateinit var epgBox: LinearLayout
+    private lateinit var epgView: EpgView
+    private lateinit var epgChannel: TextView
+    private lateinit var epgTitle: TextView
+    private lateinit var epgTime: TextView
+    private lateinit var epgDesc: TextView
+
     // Generic option picker (audio, subtitles, aspect, item menu)
     private lateinit var pickerBox: LinearLayout
     private lateinit var pickerTitle: TextView
@@ -269,6 +277,7 @@ class MainActivity : Activity() {
     private val ticker = object : Runnable {
         override fun run() {
             if (info.visibility == View.VISIBLE) updateInfo()
+            if (epgBox.visibility == View.VISIBLE) epgView.invalidate()
             if (panel.visibility == View.VISIBLE) adapter.notifyDataSetChanged()
             val g = File(filesDir, "guia.xml")
             if (channels.isNotEmpty() && System.currentTimeMillis() - g.lastModified() > GUIDE_MAX_AGE) refreshGuide(true)
@@ -375,6 +384,7 @@ class MainActivity : Activity() {
             }
             main.post {
                 guide = parsed
+                if (::epgView.isInitialized) epgView.invalidate()
                 adapter.notifyDataSetChanged()
                 if (info.visibility == View.VISIBLE) updateInfo()
             }
@@ -1233,7 +1243,8 @@ class MainActivity : Activity() {
     }
 
     private fun overlayOpen() = setup.visibility == View.VISIBLE || account.visibility == View.VISIBLE ||
-        browser.visibility == View.VISIBLE || filterBox.visibility == View.VISIBLE || pickerBox.visibility == View.VISIBLE
+        browser.visibility == View.VISIBLE || filterBox.visibility == View.VISIBLE || pickerBox.visibility == View.VISIBLE ||
+        epgBox.visibility == View.VISIBLE
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (overlayOpen() || panel.visibility == View.VISIBLE) return super.onKeyDown(keyCode, event)
@@ -1243,7 +1254,8 @@ class MainActivity : Activity() {
             KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_PAGE_DOWN -> zap(-1)
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
             KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_GUIDE, KeyEvent.KEYCODE_TV_INPUT -> showPanel()
-            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_INFO -> showInfo(false)
+            KeyEvent.KEYCODE_DPAD_RIGHT -> openEpg()
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_INFO -> showInfo(false)
             in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> typeDigit(keyCode - KeyEvent.KEYCODE_0)
             else -> return super.onKeyDown(keyCode, event)
         }
@@ -1386,6 +1398,7 @@ class MainActivity : Activity() {
     private fun onBack() {
         when {
             pickerBox.visibility == View.VISIBLE -> closePicker()
+            epgBox.visibility == View.VISIBLE -> closeEpg()
             filterBox.visibility == View.VISIBLE -> closeFilter()
             account.visibility == View.VISIBLE -> {
                 account.visibility = View.GONE
@@ -1471,7 +1484,10 @@ class MainActivity : Activity() {
                 velocity?.computeCurrentVelocity(1000)
                 val vx = velocity?.xVelocity ?: 0f
                 val dx = e.x - downX
+                val dy = e.y - downY
                 when {
+                    !dragging && vod == null && dy < -dp(90) && abs(dy) > abs(dx) * 1.5f &&
+                        !overlayOpen() && panel.visibility != View.VISIBLE -> openEpg()
                     dragging && vod != null -> seekBy(if (dx < 0) 30_000L else -30_000L)
                     dragging -> endDrag(dx, vx)
                     tracking && abs(dx) < slop * 2 && abs(e.y - downY) < slop * 2 -> onTap()
@@ -1550,11 +1566,64 @@ class MainActivity : Activity() {
 
     private fun onTap() {
         when {
+            epgBox.visibility == View.VISIBLE -> closeEpg()
             overlayOpen() -> {}
             panel.visibility == View.VISIBLE -> hidePanel()
             vod != null -> if (vodBar.visibility == View.VISIBLE) hideVodBar() else showVodBar()
             info.visibility == View.VISIBLE && menuButton.visibility == View.VISIBLE -> hideInfo.run()
             else -> showInfo(true)
+        }
+    }
+
+    // ---------------------------------------------------------------- program guide (EPG)
+
+    private fun openEpg() {
+        if (channels.isEmpty() || vod != null) return
+        hideInfo.run()
+        panel.visibility = View.GONE
+        val rows = channels.filter { it.name !in hiddenChannels }.ifEmpty { channels }
+        val currentRow = rows.indexOfFirst { it.number == channels.getOrNull(current)?.number }.coerceAtLeast(0)
+        epgView.setData(rows, currentRow)
+        if (guide.isEmpty()) refreshGuide(false)
+        epgBox.visibility = View.VISIBLE
+        epgBox.translationY = root.height * 0.3f
+        epgBox.alpha = 0f
+        epgBox.animate().translationY(0f).alpha(1f).setDuration(220).start()
+        epgView.requestFocus()
+    }
+
+    private fun closeEpg() {
+        epgBox.visibility = View.GONE
+        root.requestFocus()
+    }
+
+    private val epgHost = object : EpgView.Host {
+        override fun programs(channel: Channel) = guide[channel.tvgId]
+        override fun logo(url: String) = logos.bitmap(url) { if (::epgView.isInitialized) epgView.invalidate() }
+
+        override fun onSelected(channel: Channel, program: Program?) {
+            epgChannel.text = "${channel.number}   ${channel.name}"
+            if (program == null) {
+                epgTitle.text = "Sin información de guía"
+                epgTime.text = ""
+                epgDesc.text = ""
+            } else {
+                epgTitle.text = program.title
+                val now = System.currentTimeMillis()
+                val tag = when {
+                    program.start <= now && program.stop > now -> "  ·  Ahora"
+                    program.stop <= now -> "  ·  Ya emitido"
+                    else -> ""
+                }
+                epgTime.text = hm.format(Date(program.start)) + " – " + hm.format(Date(program.stop)) + tag
+                epgDesc.text = program.desc
+            }
+        }
+
+        override fun onPlay(channel: Channel) {
+            val index = channels.indexOfFirst { it.number == channel.number }
+            closeEpg()
+            if (index >= 0 && index != current) play(index) else showInfo(false)
         }
     }
 
@@ -2135,6 +2204,56 @@ class MainActivity : Activity() {
         root.addView(filterBox, FrameLayout.LayoutParams(dp(560), -1, Gravity.CENTER).apply {
             topMargin = dp(30); bottomMargin = dp(30)
         })
+
+        // Program guide: details on top, grid below, over the video
+        epgBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            setBackgroundColor(0xF2081030.toInt())
+            setPadding(dp(20), dp(12), dp(20), dp(10))
+            visibility = View.GONE
+        }
+        val epgHead = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.TOP
+        }
+        val epgInfo = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        epgChannel = text(15f, ACCENT, bold = true)
+        epgTitle = text(21f, bold = true)
+        epgTime = text(15f, MUTED)
+        epgDesc = text(14f, MUTED).apply { maxLines = 2 }
+        epgInfo.addView(epgChannel)
+        epgInfo.addView(epgTitle)
+        epgInfo.addView(epgTime)
+        epgInfo.addView(epgDesc)
+        epgHead.addView(epgInfo, LinearLayout.LayoutParams(0, -2, 1f))
+        epgHead.addView(text(16f, bold = true).apply {
+            this.text = "Cerrar"
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+            background = focusBg(18, 0x33FFFFFF)
+            isClickable = true
+            isFocusable = false
+            setOnClickListener { closeEpg() }
+        }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(12) })
+        epgBox.addView(epgHead, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        epgView = EpgView(this, epgHost).apply {
+            isFocusable = true
+            isFocusableInTouchMode = true
+        }
+        epgBox.addView(epgView, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(epgBox, FrameLayout.LayoutParams(-1, -1, Gravity.BOTTOM))
+        root.post {
+            // Leave the top part of the screen to the video.
+            (epgBox.layoutParams as FrameLayout.LayoutParams).height = (root.height * 0.66f).toInt()
+            epgBox.requestLayout()
+        }
+        root.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop) {
+                (epgBox.layoutParams as FrameLayout.LayoutParams).height = ((bottom - top) * 0.66f).toInt()
+                epgBox.requestLayout()
+            }
+        }
 
         // Option picker (audio / subtitles / aspect / item menu)
         pickerBox = LinearLayout(this).apply {
