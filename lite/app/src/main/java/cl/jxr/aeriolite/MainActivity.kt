@@ -57,6 +57,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -131,7 +132,8 @@ class MainActivity : Activity() {
     private lateinit var infoNow: TextView
     private lateinit var infoNext: TextView
     private lateinit var infoProgress: ProgressBar
-    private lateinit var menuButton: TextView
+    private lateinit var menuButton: ImageView
+    private lateinit var infoOptions: TextView
     private lateinit var card: LinearLayout
     private lateinit var cardLogo: ImageView
     private lateinit var cardName: TextView
@@ -474,11 +476,17 @@ class MainActivity : Activity() {
         val load = DefaultLoadControl.Builder()
             .setBufferDurationsMs(15_000, 40_000, 1_500, 3_000)
             .build()
-        val p = ExoPlayer.Builder(this)
+        // Audio the phone can't decode by itself (AC-3, E-AC-3, MP2… common in TV streams) goes
+        // through the bundled FFmpeg decoder, so those channels are no longer silent.
+        val renderers = DefaultRenderersFactory(this)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            .setEnableDecoderFallback(true)
+        val p = ExoPlayer.Builder(this, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(http, extractors))
             .setLoadControl(load)
             .build()
         p.setVideoSurfaceView(surface)
+        applyLanguages(p)
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
@@ -553,9 +561,11 @@ class MainActivity : Activity() {
             return
         }
         val ch = channels[current]
-        val item = MediaItem.Builder().setUri(ch.url)
-        if (ch.url.contains(".m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
+        val url = streamUrl(ch)
+        val item = MediaItem.Builder().setUri(url)
+        if (url.contains(".m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
         val p = ensurePlayer()
+        applyLanguages(p)
         p.setMediaItem(item.build())
         p.prepare()
         p.playWhenReady = true
@@ -584,7 +594,9 @@ class MainActivity : Activity() {
                 p.playWhenReady = true
                 main.postDelayed(this, 12_000)
             } else {
-                showStatus("No se pudo reproducir ${channels.getOrNull(current)?.name ?: "el canal"}.\nPrueba otro canal o vuelve a intentar.")
+                val ch = channels.getOrNull(current)
+                showStatus("No se pudo reproducir ${ch?.name ?: "el canal"}.\n" +
+                    if (ch != null && ch.alts.isNotEmpty()) "Prueba otra opción del canal (botón ⇄)." else "Prueba otro canal o vuelve a intentar.")
             }
         }
     }
@@ -702,6 +714,7 @@ class MainActivity : Activity() {
         if (w.ext.equals("m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
         shutter.visibility = View.VISIBLE
         val p = ensurePlayer()
+        applyLanguages(p)
         p.setMediaItem(item.build())
         val saved = history.get(w.key)
         val resumeAt = saved?.takeIf { !it.finished && it.position > 10_000 }?.position ?: 0L
@@ -1449,14 +1462,32 @@ class MainActivity : Activity() {
             // ▼ = next channel in the list, ▲ = previous (like the side list and the guide)
             KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_PAGE_DOWN -> zap(1)
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_PAGE_UP -> zap(-1)
-            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
-            KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_TV_INPUT -> showPanel()
+            // OK: short press = panel (on release), long press = other options of the channel
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                if (event.repeatCount == 0) { okLong = false; okArmed = true }
+                else if (okArmed && !okLong && event.repeatCount >= 2) { okLong = true; chooseOption() }
+            }
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_TV_INPUT -> showPanel()
+            KeyEvent.KEYCODE_PROG_RED, KeyEvent.KEYCODE_O -> chooseOption()
             KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_GUIDE -> openEpg()
             KeyEvent.KEYCODE_INFO -> showInfo(false)
             in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> typeDigit(keyCode - KeyEvent.KEYCODE_0)
             else -> return super.onKeyDown(keyCode, event)
         }
         return true
+    }
+
+    private var okLong = false
+    private var okArmed = false
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (okArmed && (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER)) {
+            okArmed = false
+            if (!okLong && !event.isCanceled && vod == null && !overlayOpen() && panel.visibility != View.VISIBLE) showPanel()
+            okLong = false
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     private fun vodKey(keyCode: Int, event: KeyEvent): Boolean {
@@ -1553,7 +1584,7 @@ class MainActivity : Activity() {
         }
         val ch = channels.getOrNull(current) ?: return null
         val now = Guide.nowNext(guide[ch.tvgId], System.currentTimeMillis()).first
-        return CastMedia(ch.url, ch.name, now?.title.orEmpty(), ch.logo, live = true, ext = "", positionMs = 0)
+        return CastMedia(streamUrl(ch), ch.name, now?.title.orEmpty(), ch.logo, live = true, ext = "", positionMs = 0)
     }
 
     private fun castMenu() {
@@ -1603,6 +1634,78 @@ class MainActivity : Activity() {
             playVod(w)
         } else if (channels.isNotEmpty() && browser.visibility != View.VISIBLE) {
             play(current)
+        }
+    }
+
+    // ---------------------------------------------------------------- channel options (Opción 2, 3…)
+
+    private fun altIndex(ch: Channel) = prefs.getInt("alt_" + ch.name, 0).coerceIn(0, ch.alts.size)
+    private fun streamUrl(ch: Channel) = ch.options[altIndex(ch)].url
+
+    private fun chooseOption() {
+        val ch = channels.getOrNull(current) ?: return
+        if (vod != null) return
+        if (ch.alts.isEmpty()) {
+            Toast.makeText(this, "Este canal tiene una sola opción.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        main.removeCallbacks(hideInfo)
+        showPicker(ch.name, ch.options.map { it.label }, altIndex(ch)) { pick ->
+            if (pick != altIndex(ch)) {
+                prefs.edit().putInt("alt_" + ch.name, pick).apply()
+                player?.stop()
+                shutter.visibility = View.VISIBLE
+                play(current)
+            } else showInfo(false)
+        }
+    }
+
+    // ---------------------------------------------------------------- settings (audio / subtitles)
+
+    private val audioChoices = listOf("es" to "Español", "en" to "Inglés", "" to "Original del contenido")
+    private val subChoices = listOf("off" to "Desactivados", "es" to "Español", "en" to "Inglés")
+    private fun audioPref() = prefs.getString("audio_lang", "es").orEmpty()
+    private fun subPref() = prefs.getString("sub_lang", "off").orEmpty()
+
+    /** Applies the general language settings (and drops choices made for the previous video). */
+    private fun applyLanguages(p: ExoPlayer) {
+        val b = p.trackSelectionParameters.buildUpon().clearOverrides()
+        b.setPreferredAudioLanguage(audioPref().ifEmpty { null })
+        val sub = subPref()
+        if (sub == "off") {
+            b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            b.setPreferredTextLanguage(null)
+        } else {
+            b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            b.setPreferredTextLanguage(sub)
+            b.setSelectUndeterminedTextLanguage(true)
+        }
+        p.trackSelectionParameters = b.build()
+    }
+
+    private fun openSettings() {
+        val audio = audioChoices.firstOrNull { it.first == audioPref() }?.second ?: "Español"
+        val subs = subChoices.firstOrNull { it.first == subPref() }?.second ?: "Desactivados"
+        showPicker("Configuración", listOf(
+            "Idioma del audio:  $audio",
+            "Subtítulos:  $subs",
+            "Cuenta de películas y series",
+            "Cambiar dirección de la lista",
+        ), -1) { pick ->
+            when (pick) {
+                0 -> showPicker("Idioma del audio", audioChoices.map { it.second }, audioChoices.indexOfFirst { it.first == audioPref() }) { a ->
+                    prefs.edit().putString("audio_lang", audioChoices[a].first).apply()
+                    player?.let(::applyLanguages)
+                    openSettings()
+                }
+                1 -> showPicker("Subtítulos", subChoices.map { it.second }, subChoices.indexOfFirst { it.first == subPref() }) { t ->
+                    prefs.edit().putString("sub_lang", subChoices[t].first).apply()
+                    player?.let(::applyLanguages)
+                    openSettings()
+                }
+                2 -> { pendingSeries = false; hidePanel(); browser.visibility = View.GONE; showAccount(null) }
+                3 -> { hidePanel(); browser.visibility = View.GONE; showSetup(null) }
+            }
         }
     }
 
@@ -2017,6 +2120,12 @@ class MainActivity : Activity() {
         }
         infoNext.text = next?.let { "Después  ${hm.format(Date(it.start))}   ${it.title}" } ?: ""
         infoNext.visibility = if (next == null) View.GONE else View.VISIBLE
+        if (ch.alts.isEmpty()) infoOptions.visibility = View.GONE
+        else {
+            val label = ch.options[altIndex(ch)].label
+            infoOptions.text = if (isTv) "$label  ·  mantén OK" else label
+            infoOptions.visibility = View.VISIBLE
+        }
     }
 
     private fun showPanel() {
@@ -2184,7 +2293,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         val tabs = listOf("Canales", "Películas", "Series").mapIndexed { i, label ->
-            text(16f, bold = true).apply {
+            text(15f, bold = true).apply {
                 this.text = label
                 gravity = Gravity.CENTER
                 background = focusBg()
@@ -2193,10 +2302,12 @@ class MainActivity : Activity() {
                 setOnClickListener { onTab(i) }
             }
         }
-        tabs.forEach { bar.addView(it, LinearLayout.LayoutParams(dp(98), dp(40)).apply { rightMargin = dp(4) }) }
+        tabs.forEach { bar.addView(it, LinearLayout.LayoutParams(dp(84), dp(40)).apply { rightMargin = dp(4) }) }
         bar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        if (onSearch != null) bar.addView(iconButton(R.drawable.ic_search, onSearch), LinearLayout.LayoutParams(dp(38), dp(38)))
-        if (onFilter != null) bar.addView(iconButton(R.drawable.ic_filter, onFilter), LinearLayout.LayoutParams(dp(38), dp(38)).apply { leftMargin = dp(4) })
+        fun icon(res: Int, action: () -> Unit) = iconButton(res, action).apply { setPadding(dp(7), dp(7), dp(7), dp(7)) }
+        if (onSearch != null) bar.addView(icon(R.drawable.ic_search, onSearch), LinearLayout.LayoutParams(dp(34), dp(34)))
+        if (onFilter != null) bar.addView(icon(R.drawable.ic_filter, onFilter), LinearLayout.LayoutParams(dp(34), dp(34)).apply { leftMargin = dp(2) })
+        bar.addView(icon(R.drawable.ic_settings) { openSettings() }, LinearLayout.LayoutParams(dp(34), dp(34)).apply { leftMargin = dp(2) })
         return bar to tabs
     }
 
@@ -2239,49 +2350,48 @@ class MainActivity : Activity() {
         root.addView(card, FrameLayout.LayoutParams(-1, -1))
 
         // Bottom info banner (live)
+        // Phones get a compact card (on a TV it is read from the sofa)
+        val compact = !isTv
         info = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(20), dp(14), dp(20), dp(14))
-            background = box(0xE60A1E5A.toInt(), 14)
+            if (compact) setPadding(dp(12), dp(8), dp(10), dp(8)) else setPadding(dp(20), dp(14), dp(20), dp(14))
+            background = box(0xE60A1E5A.toInt(), if (compact) 12 else 14)
             visibility = View.GONE
         }
         infoLogo = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
-        info.addView(infoLogo, LinearLayout.LayoutParams(dp(120), dp(68)).apply { rightMargin = dp(18) })
+        info.addView(infoLogo, if (compact) LinearLayout.LayoutParams(dp(64), dp(36)).apply { rightMargin = dp(12) }
+            else LinearLayout.LayoutParams(dp(120), dp(68)).apply { rightMargin = dp(18) })
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        infoTitle = text(24f, bold = true)
-        infoNow = text(18f)
-        infoNext = text(16f, MUTED)
+        infoTitle = text(if (compact) 15f else 24f, bold = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
+        infoNow = text(if (compact) 13f else 18f).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
+        infoNext = text(if (compact) 12f else 16f, MUTED).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
         infoProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
         col.addView(infoTitle)
         col.addView(infoNow)
-        col.addView(infoProgress, LinearLayout.LayoutParams(-1, dp(6)).apply { topMargin = dp(4); bottomMargin = dp(4) })
+        col.addView(infoProgress, LinearLayout.LayoutParams(-1, dp(if (compact) 3 else 6)).apply {
+            topMargin = dp(if (compact) 3 else 4); bottomMargin = dp(if (compact) 2 else 4)
+        })
         col.addView(infoNext)
         info.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(info, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
+        // ⇄ Opción N: other streams of the same channel
+        infoOptions = text(if (compact) 13f else 16f, bold = true).apply {
+            setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_swap, 0, 0, 0)
+            compoundDrawablePadding = dp(6)
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(if (compact) 7 else 9), dp(14), dp(if (compact) 7 else 9))
+            background = box(0x33FFFFFF, 20)
+            isClickable = true
+            visibility = View.GONE
+            setOnClickListener { chooseOption() }
+        }
+        info.addView(infoOptions, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(12) })
+        root.addView(info, if (compact) FrameLayout.LayoutParams(dp(600), -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            leftMargin = dp(16); rightMargin = dp(16); bottomMargin = dp(14)
+        } else FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
             leftMargin = dp(40); rightMargin = dp(40); bottomMargin = dp(28)
         })
 
-        // Round button (touch) that opens the channel list
-        menuButton = text(18f, bold = true).apply {
-            this.text = "  Canales"
-            setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_menu, 0, 0, 0)
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(10), dp(20), dp(10))
-            background = box(0xE60A1E5A.toInt(), 28)
-            isClickable = true
-            visibility = View.GONE
-            setOnClickListener { showPanel() }
-        }
-        root.addView(menuButton, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply {
-            topMargin = dp(24); leftMargin = dp(32)
-        })
-
-        // Cast + PiP (phones/tablets only)
-        topButtons = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            visibility = View.GONE
-        }
         fun roundButton(icon: Int, action: () -> Unit) = ImageView(this).apply {
             setImageResource(icon)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
@@ -2289,6 +2399,18 @@ class MainActivity : Activity() {
             background = box(0xE60A1E5A.toInt(), 24)
             isClickable = true
             setOnClickListener { action() }
+        }
+
+        // Round icon button (touch) that opens the side panel (channels, movies, series)
+        menuButton = roundButton(R.drawable.ic_menu) { showPanel() }.apply { visibility = View.GONE }
+        root.addView(menuButton, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.START).apply {
+            topMargin = dp(24); leftMargin = dp(32)
+        })
+
+        // Cast + PiP (phones/tablets only)
+        topButtons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.GONE
         }
         castButton = roundButton(R.drawable.ic_cast) { castMenu() }
         pipButton = roundButton(R.drawable.ic_pip) { enterPipNow(onlyIfPlaying = false) }
@@ -2414,7 +2536,8 @@ class MainActivity : Activity() {
                         hidePanel()
                         play(shown[position])
                     }
-                    position == shown.size -> {
+                    position == shown.size -> openSettings()
+                    position == shown.size + 1 -> {
                         pendingSeries = false
                         showAccount(null)
                     }
@@ -2774,7 +2897,7 @@ class MainActivity : Activity() {
     }
 
     private inner class ChannelAdapter : BaseAdapter() {
-        override fun getCount() = if (channels.isEmpty()) 0 else shown.size + 2
+        override fun getCount() = if (channels.isEmpty()) 0 else shown.size + 3
         override fun getItem(position: Int): Any? = shown.getOrNull(position)?.let { channels.getOrNull(it) }
         override fun getItemId(position: Int) = position.toLong()
 
@@ -2787,7 +2910,8 @@ class MainActivity : Activity() {
                     val program = Guide.nowNext(guide[ch.tvgId], System.currentTimeMillis()).first
                     fillRow(row, ch.number.toString(), ch.logo, ch.name, program?.title.orEmpty(), vod == null && index == current)
                 }
-                position == shown.size -> fillRow(row, "⚙", "", "Cuenta de películas y series", "")
+                position == shown.size -> fillRow(row, "⚙", "", "Configuración", "Idioma del audio y subtítulos")
+                position == shown.size + 1 -> fillRow(row, "⚙", "", "Cuenta de películas y series", "")
                 else -> fillRow(row, "⚙", "", "Cambiar dirección de la lista", "")
             }
             return row

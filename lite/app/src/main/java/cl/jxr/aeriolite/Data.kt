@@ -16,7 +16,14 @@ data class Channel(
     val tvgId: String,
     val logo: String,
     val url: String,
-)
+    /** Other streams of the same channel ("Opción 2", "Opción 3"…), from #EXTALT lines or "(Op. N)" entries. */
+    val alts: List<Alt> = emptyList(),
+) {
+    /** Main stream first, then the alternatives. */
+    val options: List<Alt> get() = listOf(Alt("Opción 1", url)) + alts
+}
+
+data class Alt(val label: String, val url: String)
 
 data class Program(
     val start: Long,
@@ -78,13 +85,25 @@ object Net {
 object Playlist {
     private val attr = Regex("""([\w-]+)="([^"]*)"""")
 
+    private val opSuffix = Regex("""\s*\((?:Op\.?|Opci[oó]n)\s*(\d+)\)\s*$""", RegexOption.IGNORE_CASE)
+
     fun parse(text: String): List<Channel> {
         val out = ArrayList<Channel>()
+        val alts = ArrayList<MutableList<Alt>>()
+        var target: MutableList<Alt>? = null
         var pending: String? = null
         for (raw in text.lineSequence()) {
             val line = raw.trim()
             if (line.isEmpty()) continue
-            if (line.startsWith("#EXTINF", ignoreCase = true)) {
+            if (line.startsWith("#EXTALT:", ignoreCase = true)) {
+                // #EXTALT:Opción 2 (FHD)|http://… -> belongs to the channel just above
+                val body = line.substring(8)
+                val bar = body.lastIndexOf('|')
+                if (bar > 0 && target != null) {
+                    val u = body.substring(bar + 1).trim()
+                    if (u.startsWith("http", true)) target.add(Alt(body.substring(0, bar).trim(), u))
+                }
+            } else if (line.startsWith("#EXTINF", ignoreCase = true)) {
                 pending = line
             } else if (!line.startsWith("#") && pending != null) {
                 val info = pending
@@ -93,6 +112,17 @@ object Playlist {
                 val attrs = HashMap<String, String>()
                 attr.findAll(info).forEach { attrs[it.groupValues[1].lowercase()] = it.groupValues[2] }
                 val name = displayName(info).ifEmpty { attrs["tvg-name"] ?: "Canal ${out.size + 1}" }
+                // "DAZN LaLiga 1 (Op. 2)" is not listed: it becomes an option of "DAZN LaLiga 1"
+                val op = opSuffix.find(name)
+                if (op != null) {
+                    val base = name.substring(0, op.range.first).trim()
+                    val owner = out.indexOfFirst { it.name.equals(base, true) }
+                    if (owner >= 0) {
+                        alts[owner].add(Alt("Opción ${op.groupValues[1]}", line))
+                        target = null
+                        continue
+                    }
+                }
                 out.add(
                     Channel(
                         number = out.size + 1,
@@ -102,10 +132,20 @@ object Playlist {
                         url = line,
                     )
                 )
+                target = ArrayList<Alt>().also { alts.add(it) }
             }
         }
-        return out
+        return out.mapIndexed { i, ch ->
+            if (alts[i].isEmpty()) ch
+            else ch.copy(alts = alts[i].distinctBy { it.url }.filter { it.url != ch.url }.mapIndexed { n, a ->
+                // numbered in order, keeping a quality tag such as "(FHD)"
+                val tag = quality.find(a.label)?.value
+                Alt("Opción ${n + 2}" + (tag?.let { " $it" } ?: ""), a.url)
+            })
+        }
     }
+
+    private val quality = Regex("""\((F?HD|SD|4K)\)""", RegexOption.IGNORE_CASE)
 
     private fun displayName(line: String): String {
         var quoted = false
