@@ -6,7 +6,7 @@ PREFIX="$(brew --prefix)"
 rm -rf build && mkdir -p build
 
 swiftc -O -parse-as-library -swift-version 5 \
-  -target arm64-apple-macos15.0 \
+  -target "$(uname -m)-apple-macos15.0" \
   -import-objc-header Sources/bridge.h \
   -I "$PREFIX/include" -L "$PREFIX/lib" -lmpv \
   -Xcc -DGL_SILENCE_DEPRECATION \
@@ -35,5 +35,5 @@ codesign --verify --verbose "$APP"
 
 du -sh "$APP"
 otool -L "$APP/Contents/MacOS/AerioLite" | head -20
-cd build && ditto -c -k --sequesterRsrc --keepParent "AerioTV Lite.app" AerioTV-Lite-Mac.zip
-ls -la AerioTV-Lite-Mac.zip
+cd build && ditto -c -k --sequesterRsrc --keepParent "AerioTV Lite.app" "AerioTV-Lite-Mac-$(uname -m).zip"
+ls -la AerioTV-Lite-Mac-*.zip

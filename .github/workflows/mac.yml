@@ -11,7 +11,12 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        # arm64 = chip Apple nativo; x86_64 (Intel) también corre en chip Apple vía Rosetta
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Instalar mpv
@@ -23,13 +28,16 @@ jobs:
         run: bash mac/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: aeriotv-lite-mac
-          path: mac/build/AerioTV-Lite-Mac.zip
+          name: aeriotv-lite-mac-${{ matrix.runner }}
+          path: mac/build/AerioTV-Lite-Mac-*.zip
       - name: Publicar en Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: lite-mac
           name: AerioTV Lite para Mac
-          body: AerioTV Lite para Mac con chip Apple (macOS 15 o superior). Se actualiza con cada compilación.
-          files: mac/build/AerioTV-Lite-Mac.zip
+          body: |
+            AerioTV Lite para Mac (macOS 15 o superior).
+            - AerioTV-Lite-Mac-arm64.zip: Mac con chip Apple (recomendado).
+            - AerioTV-Lite-Mac-x86_64.zip: Mac Intel (también funciona en chip Apple con Rosetta).
+          files: mac/build/AerioTV-Lite-Mac-*.zip
           make_latest: false
