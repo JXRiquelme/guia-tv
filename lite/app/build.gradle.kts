@@ -11,8 +11,8 @@ android {
         applicationId = "cl.jxr.aeriolite"
         minSdk = 21
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.8.1"
+        versionCode = 13
+        versionName = "1.9"
     }
 
     signingConfigs {
@@ -50,4 +50,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:$media3")
     implementation("androidx.media3:media3-exoplayer-hls:$media3")
     implementation("androidx.media3:media3-datasource:$media3")
+    // Google Cast (only used on phones/tablets; never started on Android TV)
+    implementation("com.google.android.gms:play-services-cast-framework:21.4.0")
+    implementation("androidx.mediarouter:mediarouter:1.6.0")
 }

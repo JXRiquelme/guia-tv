@@ -273,7 +273,7 @@ class EpgView(context: Context, private val host: Host) : View(context) {
             MotionEvent.ACTION_DOWN -> {
                 touchX = event.x
                 touchY = event.y
-                pullCandidate = scrollY <= 0f
+                pullCandidate = false // closing is done by dragging the header to the right
                 pulling = false
             }
             MotionEvent.ACTION_MOVE -> if (pullCandidate && !pulling) {

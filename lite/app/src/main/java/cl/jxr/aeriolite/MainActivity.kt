@@ -42,6 +42,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ProgressBar
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.media3.common.C
@@ -160,7 +161,18 @@ class MainActivity : Activity() {
     private lateinit var vodBar: LinearLayout
     private lateinit var vodTitle: TextView
     private lateinit var vodSub: TextView
-    private lateinit var vodProgress: ProgressBar
+    private lateinit var vodProgress: SeekBar
+    private var seekDragging = false
+    private lateinit var topButtons: LinearLayout
+    private lateinit var castButton: ImageView
+    private lateinit var pipButton: ImageView
+    private val isTv by lazy { packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
+    private var castingTo: String? = null
+    private var castRoutes: List<androidx.mediarouter.media.MediaRouter.RouteInfo> = emptyList()
+    private val caster: Caster? by lazy {
+        if (isTv || !Caster.playServicesAvailable(this)) null
+        else Caster(this, ::castStarted, ::castEnded) { msg -> Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+    }
     private lateinit var vodTime: TextView
     private lateinit var btnPlay: TextView
     private lateinit var vodControls: List<TextView>
@@ -280,10 +292,14 @@ class MainActivity : Activity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (!pipAllowed || Build.VERSION.SDK_INT < 26) return
-        val watching = player?.isPlaying == true && browser.visibility != View.VISIBLE &&
+        enterPipNow(onlyIfPlaying = true)
+    }
+
+    private fun enterPipNow(onlyIfPlaying: Boolean) {
+        if (!pipAllowed || Build.VERSION.SDK_INT < 26 || castingTo != null) return
+        val watching = player != null && browser.visibility != View.VISIBLE &&
             setup.visibility != View.VISIBLE && account.visibility != View.VISIBLE
-        if (!watching) return
+        if (!watching || (onlyIfPlaying && player?.isPlaying != true)) return
         try {
             val ratio = if (videoW > 0 && videoH > 0) {
                 val r = (videoW * videoRatio / videoH).coerceIn(0.5f, 2.3f)
@@ -299,6 +315,7 @@ class MainActivity : Activity() {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         if (isInPictureInPictureMode) {
             hideInfo.run()
+            topButtons.visibility = View.GONE
             hideVodBar()
             hideStatus()
             panel.visibility = View.GONE
@@ -530,6 +547,11 @@ class MainActivity : Activity() {
         if (aspectMode != 0) { aspectMode = 0; fitVideo() }
         current = index.coerceIn(0, channels.size - 1)
         retries = 0
+        if (castingTo != null) {
+            castMedia()?.let { caster?.send(it) }
+            showInfo(false)
+            return
+        }
         val ch = channels[current]
         val item = MediaItem.Builder().setUri(ch.url)
         if (ch.url.contains(".m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
@@ -669,6 +691,11 @@ class MainActivity : Activity() {
         hideInfo.run()
         vod = w
         retries = 0
+        if (castingTo != null) {
+            castMedia()?.let { caster?.send(it) }
+            showVodBar()
+            return
+        }
         if (aspectMode != 0) { aspectMode = 0; fitVideo() }
         val url = if (w.episode) acc.episodeUrl(w.id, w.ext) else acc.movieUrl(w.id, w.ext)
         val item = MediaItem.Builder().setUri(url)
@@ -768,8 +795,10 @@ class MainActivity : Activity() {
                 vod == null || vodBar.visibility != View.VISIBLE -> {}
                 p != null && !p.playWhenReady -> {}                       // paused: stays until resumed
                 pickerLayer.visibility == View.VISIBLE -> main.postDelayed(this, 3000)
+                seekDragging -> main.postDelayed(this, 3000)
                 else -> {
                     vodBar.visibility = View.GONE
+                    topButtons.visibility = View.GONE
                     seekMode = false
                     root.requestFocus()
                 }
@@ -804,6 +833,7 @@ class MainActivity : Activity() {
 
     private fun hideVodBar() {
         vodBar.visibility = View.GONE
+        topButtons.visibility = View.GONE
         if (vodBar.hasFocus()) root.requestFocus()
         main.removeCallbacks(vodBarUpdater)
     }
@@ -812,12 +842,36 @@ class MainActivity : Activity() {
         val p = player ?: return
         val pos = p.currentPosition
         val dur = p.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
+        if (seekDragging || pendingSeekTarget >= 0) return
         vodProgress.progress = if (dur > 0) (pos * 1000 / dur).toInt() else 0
         val state = if (!p.playWhenReady) "Pausa   ·   " else ""
         vodTime.text = state + clock(pos) + (if (dur > 0) " / " + clock(dur) else "")
         btnPlay.text = if (p.playWhenReady) "❚❚  Pausa" else "▶  Reproducir"
         if (!p.playWhenReady) {
             vodBar.visibility = View.VISIBLE
+        }
+    }
+
+    // Timeline: drag with the finger, or ◀ ▶ on the remote when the bar has focus.
+    private var pendingSeekTarget = -1L
+    private val applyKeySeek = Runnable {
+        if (pendingSeekTarget >= 0) player?.seekTo(pendingSeekTarget)
+        pendingSeekTarget = -1L
+    }
+
+    private fun timelinePreview(progress: Int, fromUser: Boolean) {
+        if (!fromUser) return
+        val p = player ?: return
+        val dur = p.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: return
+        val target = dur * progress / 1000
+        vodTime.text = "Ir a  " + clock(target) + " / " + clock(dur)
+        main.removeCallbacks(hideVodBarTask)
+        main.postDelayed(hideVodBarTask, 5000)
+        if (!seekDragging) {
+            // remote control: seek once the presses stop
+            pendingSeekTarget = target
+            main.removeCallbacks(applyKeySeek)
+            main.postDelayed(applyKeySeek, 600)
         }
     }
 
@@ -1487,6 +1541,71 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------------------------------------------------------------- cast (Chromecast / Google TV)
+
+    private fun castMedia(): CastMedia? {
+        val w = vod
+        if (w != null) {
+            val acc = xtream() ?: return null
+            val pos = player?.currentPosition ?: history.get(w.key)?.position ?: 0L
+            return CastMedia(if (w.episode) acc.episodeUrl(w.id, w.ext) else acc.movieUrl(w.id, w.ext),
+                w.title, w.subtitle, w.poster, live = false, ext = w.ext, positionMs = pos)
+        }
+        val ch = channels.getOrNull(current) ?: return null
+        val now = Guide.nowNext(guide[ch.tvgId], System.currentTimeMillis()).first
+        return CastMedia(ch.url, ch.name, now?.title.orEmpty(), ch.logo, live = true, ext = "", positionMs = 0)
+    }
+
+    private fun castMenu() {
+        val c = caster ?: return
+        val name = castingTo
+        if (name != null) {
+            showPicker("Transmitiendo a $name", listOf("Dejar de transmitir", "Seguir transmitiendo"), -1) { pick ->
+                if (pick == 0) c.stop()
+            }
+            return
+        }
+        castRoutes = emptyList()
+        showPicker("Transmitir a…", listOf("Buscando Chromecast y Google TV…"), -1) { pick ->
+            val route = castRoutes.getOrNull(pick) ?: return@showPicker
+            val media = castMedia() ?: return@showPicker
+            c.castTo(route, media)
+            Toast.makeText(this, "Conectando con ${route.name}…", Toast.LENGTH_SHORT).show()
+        }
+        val started = c.startScan { routes ->
+            castRoutes = routes
+            if (pickerLayer.visibility != View.VISIBLE) return@startScan
+            pickerOptions = if (routes.isEmpty()) listOf("Buscando Chromecast y Google TV…") else routes.map { it.name }
+            (pickerList.layoutParams as LinearLayout.LayoutParams).height = pickerOptions.size * (dp(46) + 1)
+            pickerList.requestLayout()
+            pickerAdapter.notifyDataSetChanged()
+        }
+        if (!started) {
+            closePicker()
+            Toast.makeText(this, "La transmisión no está disponible en este equipo.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun castStarted(device: String) {
+        castingTo = device
+        if (vod != null) saveVodProgress()
+        stopPlayback()
+        showStatus("Transmitiendo a $device\nToca la pantalla y el botón de transmitir para detener.")
+        showTopButtons()
+    }
+
+    private fun castEnded(lastPositionMs: Long) {
+        castingTo = null
+        hideStatus()
+        val w = vod
+        if (w != null) {
+            if (lastPositionMs > 0) history.update(w, lastPositionMs, w.duration)
+            playVod(w)
+        } else if (channels.isNotEmpty() && browser.visibility != View.VISIBLE) {
+            play(current)
+        }
+    }
+
     // ---------------------------------------------------------------- picker
 
     private fun showPicker(title: String, options: List<String>, selected: Int, action: (Int) -> Unit) {
@@ -1521,6 +1640,7 @@ class MainActivity : Activity() {
     /** Fades the menu out; [restoreFocus] = false when another screen is taking over. */
     private fun closePicker(restoreFocus: Boolean = true) {
         if (pickerLayer.visibility != View.VISIBLE) return
+        if (castingTo == null) caster?.stopScan()
         pickerAction = null
         pickerLayer.animate().cancel()
         pickerLayer.animate().alpha(0f).setDuration(160).withEndAction {
@@ -1648,25 +1768,33 @@ class MainActivity : Activity() {
                 velocity?.addMovement(e)
                 val dx = e.x - downX
                 val dy = e.y - downY
-                if (!dragging && tracking && abs(dx) > slop * 2 && abs(dx) > abs(dy) * 1.3f && canDrag()) {
-                    dragging = true
-                    hideInfo.run()
+                if (!dragging && tracking && canDrag()) {
+                    // live: vertical drag changes channel; movies: horizontal drag seeks
+                    if (vod == null && abs(dy) > slop * 2 && abs(dy) > abs(dx) * 1.3f) {
+                        dragging = true
+                        hideInfo.run()
+                    } else if (vod != null && abs(dx) > slop * 2 && abs(dx) > abs(dy) * 1.3f) {
+                        dragging = true
+                    }
                 }
-                if (!dragging && abs(dy) > slop * 2) tracking = false
-                if (dragging && vod == null) dragTo(dx)
+                if (!dragging && (abs(dx) > slop * 2 || abs(dy) > slop * 2)) tracking = false
+                if (dragging && vod == null) dragTo(dy)
             }
             MotionEvent.ACTION_UP -> {
                 velocity?.addMovement(e)
                 velocity?.computeCurrentVelocity(1000)
-                val vx = velocity?.xVelocity ?: 0f
+                val vy = velocity?.yVelocity ?: 0f
                 val dx = e.x - downX
                 val dy = e.y - downY
+                val horizontalSwipe = abs(dx) > dp(80) && abs(dx) > abs(dy) * 1.5f
                 when {
-                    !dragging && vod == null && dy < -dp(90) && abs(dy) > abs(dx) * 1.5f &&
-                        !overlayOpen() && panel.visibility != View.VISIBLE -> openEpg()
                     dragging && vod != null -> seekBy(if (dx > 0) 30_000L else -30_000L)
-                    dragging -> endDrag(dx, vx)
-                    tracking && abs(dx) < slop * 2 && abs(e.y - downY) < slop * 2 -> onTap()
+                    dragging -> endDrag(dy, vy)
+                    // live: finger to the right = channel list (from the left), to the left = guide (from the right)
+                    !dragging && vod == null && horizontalSwipe && !overlayOpen() && panel.visibility != View.VISIBLE ->
+                        if (dx > 0) showPanel() else openEpg()
+                    panel.visibility == View.VISIBLE && horizontalSwipe && dx < 0 -> hidePanel()
+                    tracking && abs(dx) < slop * 2 && abs(dy) < slop * 2 -> onTap()
                 }
                 dragging = false
                 tracking = false
@@ -1684,39 +1812,40 @@ class MainActivity : Activity() {
     private fun canDrag() = !overlayOpen() && panel.visibility != View.VISIBLE &&
         (vod != null || channels.size > 1)
 
-    /** Moves the video with the finger while the next channel's card slides in. */
-    private fun dragTo(dx: Float) {
-        val w = root.width.toFloat()
-        val target = neighbor(if (dx < 0) 1 else -1)
+    /** Moves the video with the finger (up = next channel) while the next channel's card slides in. */
+    private fun dragTo(dy: Float) {
+        val h = root.height.toFloat()
+        val target = neighbor(if (dy < 0) 1 else -1)
         if (target != dragTarget) {
             dragTarget = target
             fillCard(target)
         }
-        surface.translationX = dx
+        surface.translationY = dy
         card.alpha = 1f
+        card.translationX = 0f
         card.visibility = View.VISIBLE
-        card.translationX = if (dx < 0) w + dx else -w + dx
+        card.translationY = if (dy < 0) h + dy else -h + dy
     }
 
-    private fun endDrag(dx: Float, vx: Float) {
-        val w = root.width.toFloat()
-        val fling = abs(vx) > dp(900) && (vx < 0) == (dx < 0)
-        val commit = dragTarget >= 0 && dx != 0f && (abs(dx) > w * 0.28f || fling)
+    private fun endDrag(dy: Float, vy: Float) {
+        val h = root.height.toFloat()
+        val fling = abs(vy) > dp(900) && (vy < 0) == (dy < 0)
+        val commit = dragTarget >= 0 && dy != 0f && (abs(dy) > h * 0.25f || fling)
         if (commit) {
-            val dir = if (dx < 0) -1f else 1f
+            val dir = if (dy < 0) -1f else 1f
             val target = dragTarget
-            surface.animate().translationX(dir * w).setDuration(180).start()
-            card.animate().translationX(0f).setDuration(180).withEndAction {
-                surface.translationX = 0f
+            surface.animate().translationY(dir * h).setDuration(180).start()
+            card.animate().translationY(0f).setDuration(180).withEndAction {
+                surface.translationY = 0f
                 cardPending = true
                 play(target)
                 main.removeCallbacks(cardTimeout)
                 main.postDelayed(cardTimeout, 5000)
             }.start()
         } else {
-            surface.animate().translationX(0f).setDuration(160).start()
-            val away = if (card.translationX > 0) w else -w
-            card.animate().translationX(away).setDuration(160).withEndAction { card.visibility = View.GONE }.start()
+            surface.animate().translationY(0f).setDuration(160).start()
+            val away = if (card.translationY > 0) h else -h
+            card.animate().translationY(away).setDuration(160).withEndAction { card.visibility = View.GONE }.start()
         }
     }
 
@@ -1745,7 +1874,7 @@ class MainActivity : Activity() {
             epgBox.visibility == View.VISIBLE -> closeEpg()
             overlayOpen() -> {}
             panel.visibility == View.VISIBLE -> hidePanel()
-            vod != null -> if (vodBar.visibility == View.VISIBLE) hideVodBar() else showVodBar()
+            vod != null -> if (vodBar.visibility == View.VISIBLE) hideVodBar() else { showVodBar(); showTopButtons() }
             info.visibility == View.VISIBLE && menuButton.visibility == View.VISIBLE -> hideInfo.run()
             else -> showInfo(true)
         }
@@ -1764,9 +1893,10 @@ class MainActivity : Activity() {
         epgBox.animate().cancel()
         epgClosing = false
         epgBox.visibility = View.VISIBLE
-        epgBox.translationY = root.height * 0.3f
+        epgBox.translationY = 0f
+        epgBox.translationX = root.width * 0.3f
         epgBox.alpha = 0f
-        epgBox.animate().translationY(0f).alpha(1f).setDuration(220).start()
+        epgBox.animate().translationX(0f).alpha(1f).setDuration(220).start()
         epgView.requestFocus()
     }
 
@@ -1777,29 +1907,29 @@ class MainActivity : Activity() {
         epgClosing = true
         root.requestFocus()
         epgBox.animate().cancel()
-        epgBox.animate().translationY(epgBox.height.toFloat() * 0.6f).alpha(0f).setDuration(220).withEndAction {
+        epgBox.animate().translationX(epgBox.width.toFloat() * 0.6f).alpha(0f).setDuration(220).withEndAction {
             epgBox.visibility = View.GONE
-            epgBox.translationY = 0f
+            epgBox.translationX = 0f
             epgBox.alpha = 1f
             epgClosing = false
         }.start()
     }
 
-    /** Finger dragging the guide down: it follows the finger; far enough (or fast) closes it. */
-    private var epgDragY = 0f
+    /** Finger dragging the guide to the right: it follows the finger; far enough closes it. */
+    private var epgDragX = 0f
     private var epgDragging = false
     private fun epgDrag(e: MotionEvent): Boolean {
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { epgDragY = e.rawY; epgDragging = false }
+            MotionEvent.ACTION_DOWN -> { epgDragX = e.rawX; epgDragging = false }
             MotionEvent.ACTION_MOVE -> {
-                val dy = e.rawY - epgDragY
-                if (!epgDragging && dy > slop * 2) epgDragging = true
-                if (epgDragging) epgBox.translationY = dy.coerceAtLeast(0f)
+                val dx = e.rawX - epgDragX
+                if (!epgDragging && dx > slop * 2) epgDragging = true
+                if (epgDragging) epgBox.translationX = dx.coerceAtLeast(0f)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (epgDragging) {
-                    if (epgBox.translationY > dp(70)) closeEpg()
-                    else epgBox.animate().translationY(0f).setDuration(160).start()
+                    if (epgBox.translationX > dp(80)) closeEpg()
+                    else epgBox.animate().translationX(0f).setDuration(160).start()
                 }
                 val was = epgDragging
                 epgDragging = false
@@ -1846,13 +1976,27 @@ class MainActivity : Activity() {
     private val hideInfo = Runnable {
         info.visibility = View.GONE
         menuButton.visibility = View.GONE
+        if (vod == null) topButtons.visibility = View.GONE
+    }
+
+    /** Cast + picture-in-picture buttons (top right), only on phones/tablets. */
+    private fun showTopButtons() {
+        if (isTv) return
+        castButton.visibility = if (caster != null) View.VISIBLE else View.GONE
+        pipButton.visibility = if (pipAllowed && castingTo == null) View.VISIBLE else View.GONE
+        topButtons.visibility = if (castButton.visibility == View.VISIBLE || pipButton.visibility == View.VISIBLE) View.VISIBLE else View.GONE
+        castButton.alpha = if (castingTo != null) 1f else 0.9f
+        castButton.setColorFilter(if (castingTo != null) ACCENT else Color.WHITE)
     }
 
     private fun showInfo(touch: Boolean) {
         if (channels.isEmpty()) return
         updateInfo()
         info.visibility = View.VISIBLE
-        if (touch) menuButton.visibility = View.VISIBLE
+        if (touch) {
+            menuButton.visibility = View.VISIBLE
+            showTopButtons()
+        }
         main.removeCallbacks(hideInfo)
         main.postDelayed(hideInfo, if (touch) 6000 else 5000)
     }
@@ -2040,7 +2184,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         val tabs = listOf("Canales", "Películas", "Series").mapIndexed { i, label ->
-            text(18f, bold = true).apply {
+            text(16f, bold = true).apply {
                 this.text = label
                 gravity = Gravity.CENTER
                 background = focusBg()
@@ -2049,10 +2193,10 @@ class MainActivity : Activity() {
                 setOnClickListener { onTab(i) }
             }
         }
-        tabs.forEach { bar.addView(it, LinearLayout.LayoutParams(dp(112), dp(42)).apply { rightMargin = dp(6) }) }
+        tabs.forEach { bar.addView(it, LinearLayout.LayoutParams(dp(98), dp(40)).apply { rightMargin = dp(4) }) }
         bar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        if (onSearch != null) bar.addView(iconButton(R.drawable.ic_search, onSearch), LinearLayout.LayoutParams(dp(44), dp(44)))
-        if (onFilter != null) bar.addView(iconButton(R.drawable.ic_filter, onFilter), LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = dp(6) })
+        if (onSearch != null) bar.addView(iconButton(R.drawable.ic_search, onSearch), LinearLayout.LayoutParams(dp(38), dp(38)))
+        if (onFilter != null) bar.addView(iconButton(R.drawable.ic_filter, onFilter), LinearLayout.LayoutParams(dp(38), dp(38)).apply { leftMargin = dp(4) })
         return bar to tabs
     }
 
@@ -2133,6 +2277,27 @@ class MainActivity : Activity() {
             topMargin = dp(24); leftMargin = dp(32)
         })
 
+        // Cast + PiP (phones/tablets only)
+        topButtons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.GONE
+        }
+        fun roundButton(icon: Int, action: () -> Unit) = ImageView(this).apply {
+            setImageResource(icon)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(11), dp(11), dp(11), dp(11))
+            background = box(0xE60A1E5A.toInt(), 24)
+            isClickable = true
+            setOnClickListener { action() }
+        }
+        castButton = roundButton(R.drawable.ic_cast) { castMenu() }
+        pipButton = roundButton(R.drawable.ic_pip) { enterPipNow(onlyIfPlaying = false) }
+        topButtons.addView(castButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { rightMargin = dp(10) })
+        topButtons.addView(pipButton, LinearLayout.LayoutParams(dp(48), dp(48)))
+        root.addView(topButtons, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(24); rightMargin = dp(32)
+        })
+
         // Bottom bar (movies / series)
         vodBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -2142,11 +2307,28 @@ class MainActivity : Activity() {
         }
         vodTitle = text(24f, bold = true)
         vodSub = text(17f, MUTED)
-        vodProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
+        vodProgress = SeekBar(this).apply {
+            max = 1000
+            keyProgressIncrement = 10
+            isFocusable = true
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) = timelinePreview(progress, fromUser)
+                override fun onStartTrackingTouch(bar: SeekBar) {
+                    seekDragging = true
+                }
+                override fun onStopTrackingTouch(bar: SeekBar) {
+                    seekDragging = false
+                    val p = player ?: return
+                    val dur = p.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: return
+                    p.seekTo(dur * bar.progress / 1000)
+                    showVodBar()
+                }
+            })
+        }
         vodTime = text(17f)
         vodBar.addView(vodTitle)
         vodBar.addView(vodSub)
-        vodBar.addView(vodProgress, LinearLayout.LayoutParams(-1, dp(8)).apply { topMargin = dp(8); bottomMargin = dp(6) })
+        vodBar.addView(vodProgress, LinearLayout.LayoutParams(-1, dp(28)).apply { topMargin = dp(4); bottomMargin = dp(2) })
         vodBar.isClickable = true
         vodBar.addView(vodTime)
         val controls = LinearLayout(this).apply {
@@ -2244,7 +2426,7 @@ class MainActivity : Activity() {
         panel.addView(text(13f, HINT).apply {
             this.text = "OK: ver  ·  Atrás: cerrar  ·  ▲▼ en pantalla cambia canal"
         })
-        root.addView(panel, FrameLayout.LayoutParams(dp(520), -1, Gravity.START))
+        root.addView(panel, FrameLayout.LayoutParams(dp(400), -1, Gravity.START))
 
         // Movies / series browser
         browser = LinearLayout(this).apply {
@@ -2449,8 +2631,6 @@ class MainActivity : Activity() {
         epgInfo.addView(epgDesc)
         epgHead.addView(epgInfo, LinearLayout.LayoutParams(0, -2, 1f))
         epgHead.setOnTouchListener { _, e -> epgDrag(e); true }
-        epgBox.addView(View(this).apply { background = box(0x66FFFFFF, 3) },
-            LinearLayout.LayoutParams(dp(44), dp(5)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(6) })
         epgHead.addView(text(16f, bold = true).apply {
             this.text = "Cerrar"
             gravity = Gravity.CENTER
@@ -2466,15 +2646,15 @@ class MainActivity : Activity() {
             isFocusableInTouchMode = true
         }
         epgBox.addView(epgView, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(epgBox, FrameLayout.LayoutParams(-1, -1, Gravity.BOTTOM))
+        // The guide is a panel on the right (the channel list is on the left); video stays visible at the left.
+        root.addView(epgBox, FrameLayout.LayoutParams(-1, -1, Gravity.END))
         root.post {
-            // Leave the top part of the screen to the video.
-            (epgBox.layoutParams as FrameLayout.LayoutParams).height = (root.height * 0.66f).toInt()
+            (epgBox.layoutParams as FrameLayout.LayoutParams).width = (root.width * 0.72f).toInt()
             epgBox.requestLayout()
         }
-        root.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
-            if (bottom - top != oldBottom - oldTop) {
-                (epgBox.layoutParams as FrameLayout.LayoutParams).height = ((bottom - top) * 0.66f).toInt()
+        root.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
+            if (right - left != oldRight - oldLeft) {
+                (epgBox.layoutParams as FrameLayout.LayoutParams).width = ((right - left) * 0.72f).toInt()
                 epgBox.requestLayout()
             }
         }
@@ -2562,15 +2742,17 @@ class MainActivity : Activity() {
     }
 
 
-    private fun makeRow(logoW: Int, logoH: Int): LinearLayout = LinearLayout(this).apply {
+    private fun makeRow(logoW: Int, logoH: Int, compact: Boolean = false): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(8), dp(7), dp(8), dp(7))
-        addView(text(18f, HINT).apply { gravity = Gravity.END }, LinearLayout.LayoutParams(dp(40), -2).apply { rightMargin = dp(12) })
-        addView(ImageView(this@MainActivity).apply { scaleType = ImageView.ScaleType.FIT_CENTER }, LinearLayout.LayoutParams(dp(logoW), dp(logoH)).apply { rightMargin = dp(12) })
+        val pad = if (compact) dp(5) else dp(7)
+        setPadding(dp(6), pad, dp(6), pad)
+        addView(text(if (compact) 15f else 18f, HINT).apply { gravity = Gravity.END },
+            LinearLayout.LayoutParams(dp(if (compact) 30 else 40), -2).apply { rightMargin = dp(if (compact) 8 else 12) })
+        addView(ImageView(this@MainActivity).apply { scaleType = ImageView.ScaleType.FIT_CENTER }, LinearLayout.LayoutParams(dp(logoW), dp(logoH)).apply { rightMargin = dp(if (compact) 8 else 12) })
         val col = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(text(19f, bold = true))
-        col.addView(text(15f, MUTED))
+        col.addView(text(if (compact) 16f else 19f, bold = true))
+        col.addView(text(if (compact) 13f else 15f, MUTED))
         addView(col, LinearLayout.LayoutParams(0, -2, 1f))
     }
 
@@ -2597,7 +2779,7 @@ class MainActivity : Activity() {
         override fun getItemId(position: Int) = position.toLong()
 
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val row = (convertView as? LinearLayout) ?: makeRow(72, 40)
+            val row = (convertView as? LinearLayout) ?: makeRow(56, 32, compact = true)
             when {
                 position < shown.size -> {
                     val index = shown[position]
