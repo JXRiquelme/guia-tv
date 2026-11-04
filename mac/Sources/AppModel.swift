@@ -171,6 +171,9 @@ final class AppModel: ObservableObject {
     }
 
     private func startIndex() -> Int {
+        // Reopens on the last channel watched (its chosen option is remembered per channel).
+        if let last = UserDefaults.standard.string(forKey: "last_channel"),
+           let i = channels.firstIndex(where: { $0.name == last }) { return i }
         if let i = channels.firstIndex(where: { $0.name.caseInsensitiveCompare(Self.startChannel) == .orderedSame }) { return i }
         if let i = channels.firstIndex(where: { $0.name.localizedCaseInsensitiveContains(Self.startChannel) }) { return i }
         return 0
@@ -256,6 +259,7 @@ final class AppModel: ObservableObject {
         playToken += 1
         status = nil
         applyLanguages()
+        UserDefaults.standard.set(channels[current].name, forKey: "last_channel")
         mpv.load(streamURL(channels[current]))
         armStallWatch()
         flashInfo()

@@ -28,17 +28,6 @@ class LiteCastOptions : OptionsProvider {
     override fun getAdditionalSessionProviders(context: Context): List<SessionProvider>? = null
 }
 
-/** What to send to the TV. */
-data class CastMedia(
-    val url: String,
-    val title: String,
-    val subtitle: String,
-    val image: String,
-    val live: Boolean,
-    val ext: String,
-    val positionMs: Long,
-)
-
 /**
  * Small wrapper around the Cast framework. Created lazily, only on phones/tablets,
  * so Android TV never loads any of it.
@@ -111,11 +100,11 @@ class Caster(
     val deviceName: String? get() = cast()?.sessionManager?.currentCastSession?.castDevice?.friendlyName
 
     /** Starts looking for devices; [onRoutes] is called every time the list changes. */
-    fun startScan(onRoutes: (List<MediaRouter.RouteInfo>) -> Unit): Boolean {
+    fun startScan(onRoutes: (List<CastRoute>) -> Unit): Boolean {
         val selector: MediaRouteSelector = cast()?.mergedSelector ?: return false
         stopScan()
         fun publish() {
-            onRoutes(router.routes.filter { !it.isDefault && it.isEnabled && it.matchesSelector(selector) })
+            onRoutes(router.routes.filter { !it.isDefault && it.isEnabled && it.matchesSelector(selector) }.map { CastRoute(it.name, it) })
         }
         val cb = object : MediaRouter.Callback() {
             override fun onRouteAdded(r: MediaRouter, route: MediaRouter.RouteInfo) = publish()
@@ -134,7 +123,8 @@ class Caster(
     }
 
     /** Connects to [route]; [media] starts playing there as soon as the session is up. */
-    fun castTo(route: MediaRouter.RouteInfo, media: CastMedia) {
+    fun castTo(target: CastRoute, media: CastMedia) {
+        val route = target.handle as MediaRouter.RouteInfo
         stopScan()
         val session = cast()?.sessionManager?.currentCastSession
         if (session?.isConnected == true) {

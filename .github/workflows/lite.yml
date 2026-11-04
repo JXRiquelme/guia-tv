@@ -23,18 +23,24 @@ jobs:
           gradle-version: "8.11.1"
       - name: Compilar
         working-directory: lite
-        run: gradle --no-daemon :app:assembleRelease
+        run: gradle --no-daemon :app:assembleTvRelease :app:assembleMovilRelease
       - name: Preparar APK
-        run: cp lite/app/build/outputs/apk/release/app-release.apk aeriotv-lite.apk
+        run: |
+          cp lite/app/build/outputs/apk/tv/release/app-tv-release.apk aeriotv-lite-tv.apk
+          cp lite/app/build/outputs/apk/movil/release/app-movil-release.apk aeriotv-lite-movil.apk
+          ls -l *.apk
       - uses: actions/upload-artifact@v4
         with:
           name: aeriotv-lite
-          path: aeriotv-lite.apk
+          path: aeriotv-lite-*.apk
       - name: Publicar en Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: lite
           name: AerioTV Lite
-          body: APK de AerioTV Lite (se actualiza con cada compilación).
-          files: aeriotv-lite.apk
+          body: |
+            AerioTV Lite (se actualiza con cada compilación).
+            - aeriotv-lite-tv.apk: Android TV (versión liviana).
+            - aeriotv-lite-movil.apk: teléfonos y tablets.
+          files: aeriotv-lite-*.apk
           make_latest: true

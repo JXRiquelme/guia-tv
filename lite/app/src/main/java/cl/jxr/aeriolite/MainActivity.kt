@@ -168,9 +168,9 @@ class MainActivity : Activity() {
     private lateinit var topButtons: LinearLayout
     private lateinit var castButton: ImageView
     private lateinit var pipButton: ImageView
-    private val isTv by lazy { packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
+    private val isTv by lazy { BuildConfig.TV || packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
     private var castingTo: String? = null
-    private var castRoutes: List<androidx.mediarouter.media.MediaRouter.RouteInfo> = emptyList()
+    private var castRoutes: List<CastRoute> = emptyList()
     private val caster: Caster? by lazy {
         if (isTv || !Caster.playServicesAvailable(this)) null
         else Caster(this, ::castStarted, ::castEnded) { msg -> Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
@@ -287,7 +287,7 @@ class MainActivity : Activity() {
 
     /** Only phones/tablets that support it; never on Android TV. */
     private val pipAllowed by lazy {
-        Build.VERSION.SDK_INT >= 26 &&
+        !BuildConfig.TV && Build.VERSION.SDK_INT >= 26 &&
             packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE) &&
             !packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
     }
@@ -370,6 +370,15 @@ class MainActivity : Activity() {
     }
 
     private fun startIndex(): Int {
+        // Phones/tablets reopen on the last channel watched (with its chosen option);
+        // the Android TV build always starts on Canal 13.
+        if (!BuildConfig.TV) {
+            val last = prefs.getString("last_channel", null)
+            if (last != null) {
+                val i = channels.indexOfFirst { it.name == last }
+                if (i >= 0) return i
+            }
+        }
         val exact = channels.indexOfFirst { it.name.equals(START_CHANNEL, true) }
         if (exact >= 0) return exact
         val loose = channels.indexOfFirst { it.name.contains(START_CHANNEL, true) }
@@ -561,6 +570,7 @@ class MainActivity : Activity() {
             return
         }
         val ch = channels[current]
+        if (!BuildConfig.TV) prefs.edit().putString("last_channel", ch.name).apply()
         val url = streamUrl(ch)
         val item = MediaItem.Builder().setUri(url)
         if (url.contains(".m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
