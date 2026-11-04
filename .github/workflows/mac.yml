@@ -1,0 +1,34 @@
+name: Compilar AerioTV Lite para Mac
+
+on:
+  push:
+    branches: [main]
+    paths: ["mac/**", ".github/workflows/mac.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar mpv
+        run: |
+          brew update >/dev/null || true
+          brew install mpv dylibbundler
+      - name: Compilar
+        run: bash mac/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aeriotv-lite-mac
+          path: mac/build/AerioTV-Lite-Mac.zip
+      - name: Publicar en Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: lite-mac
+          name: AerioTV Lite para Mac
+          body: AerioTV Lite para Mac con chip Apple (macOS 14 o superior). Se actualiza con cada compilación.
+          files: mac/build/AerioTV-Lite-Mac.zip
+          make_latest: false

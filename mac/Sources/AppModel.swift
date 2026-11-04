@@ -1,0 +1,902 @@
+import Cocoa
+import SwiftUI
+
+enum GridEntry: Identifiable, Hashable {
+    case item(VodItem)
+    case watch(Watch)
+    var id: String {
+        switch self {
+        case .item(let v): return "i" + v.id
+        case .watch(let w): return "w" + w.id
+        }
+    }
+}
+
+enum GridMode { case category, continueAll, laterAll, search }
+enum Tab: Int { case live = 0, movies = 1, series = 2 }
+
+/// All app state and behaviour. Lives on the main thread.
+final class AppModel: ObservableObject {
+    static let guideURL = "https://raw.githubusercontent.com/JXRiquelme/guia-tv/main/guia.xml"
+    static let startChannel = "Canal 13"
+    static let defaultServer = "https://reborned.cc:8443"
+
+    let mpv = MPV.shared
+    private let d = UserDefaults.standard
+
+    // Live
+    @Published var channels: [Channel] = []
+    @Published var current = 0
+    @Published var guide: [String: [Program]] = [:]
+    @Published var status: String?
+    @Published var shutter = true
+    @Published var showInfo = false
+    @Published var showPanel = false
+    @Published var panelQuery = ""
+    @Published var panelSelection = 0
+    @Published var showEPG = false
+    @Published var epgRow = 0
+    @Published var epgCursor = Date()
+    @Published var epgWindowStart = Date()
+    @Published var hiddenChannels: Set<String>
+    @Published var now = Date()
+
+    // Setup
+    @Published var showSetup = false
+    @Published var setupMessage = ""
+    @Published var listURL: String
+    @Published var showAccount = false
+    @Published var accountMessage = ""
+    var playlistAccount: XtreamAccount?
+
+    // Movies / series playback
+    @Published var vod: Watch?
+    @Published var showVodBar = false
+    @Published var aspect = "no"
+
+    // Browser
+    @Published var browserOpen = false
+    @Published var browserSeries = false
+    @Published var categories: [Bool: [Category]] = [:]
+    @Published var selectedCat: [Bool: String] = [:]
+    @Published var entries: [GridEntry] = []
+    @Published var gridLabel = ""
+    @Published var gridMessage: String?
+    @Published var gridMode = GridMode.category
+    @Published var topMode = 0
+    @Published var searchOpen = false
+    @Published var searchText = ""
+    @Published var openSeries: VodItem?
+    @Published var episodes: [Episode] = []
+    @Published var season = 0
+    @Published var seriesInfo = ""
+    @Published var hiddenMovieCats: Set<String>
+    @Published var hiddenSeriesCats: Set<String>
+    @Published var filterKind: Tab?
+    @Published var history: [Watch]
+    @Published var later: [VodItem]
+
+    private var itemCache: [String: [VodItem]] = [:]
+    private var catalogCache: [Bool: [VodItem]] = [:]
+    private var loadToken = 0
+    private var playToken = 0
+    private var retries = 0
+    private var infoTimer: Timer?
+    private var vodBarTimer: Timer?
+    private var zapTimer: Timer?
+    private var stallTimer: Timer?
+    private var saveTimer: Timer?
+    private var clockTimer: Timer?
+    private var keyMonitor: Any?
+    private var searchDebounce: Timer?
+
+    init() {
+        listURL = UserDefaults.standard.string(forKey: "list") ?? ""
+        hiddenChannels = Set(UserDefaults.standard.stringArray(forKey: "hide_ch") ?? [])
+        hiddenMovieCats = Set(UserDefaults.standard.stringArray(forKey: "hide_vod") ?? [])
+        hiddenSeriesCats = Set(UserDefaults.standard.stringArray(forKey: "hide_series") ?? [])
+        history = Store.load("history", [Watch].self) ?? []
+        later = Store.load("later", [VodItem].self) ?? []
+
+        mpv.onReady = { [weak self] in self?.playbackReady() }
+        mpv.onFirstFrame = { [weak self] in self?.shutter = false }
+        mpv.onEndFile = { [weak self] error, eof in self?.playbackEnded(error: error, eof: eof) }
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self = self else { return e }
+            return self.handleKey(e) ? nil : e
+        }
+        clockTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.now = Date()
+            if let f = self.guideFile, let age = try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+               Date().timeIntervalSince(age) > 3 * 3600 { self.refreshGuide(force: true) }
+        }
+        if listURL.isEmpty { openSetup(nil) } else { start() }
+    }
+
+    // MARK: - Live data
+
+    private var listFile: URL { Store.cacheDir.appendingPathComponent("list.m3u") }
+    private var guideFile: URL? { Store.cacheDir.appendingPathComponent("guia.xml") }
+
+    func start() {
+        showSetup = false
+        let text = (try? String(contentsOf: listFile, encoding: .utf8)) ?? ""
+        let cached = Playlist.parse(text)
+        playlistAccount = XtreamAccount.fromPlaylist(text)
+        if !cached.isEmpty {
+            channels = cached
+            play(startIndex())
+            refreshGuide(force: false)
+            refreshList(silent: true)
+        } else {
+            status = "Cargando canales…"
+            refreshList(silent: false)
+        }
+    }
+
+    private func startIndex() -> Int {
+        if let i = channels.firstIndex(where: { $0.name.caseInsensitiveCompare(Self.startChannel) == .orderedSame }) { return i }
+        if let i = channels.firstIndex(where: { $0.name.localizedCaseInsensitiveContains(Self.startChannel) }) { return i }
+        return 0
+    }
+
+    private func refreshList(silent: Bool) {
+        Net.get(listURL) { [weak self] r in
+            guard let self = self else { return }
+            switch r {
+            case .failure(let e):
+                if !silent { self.openSetup("No se pudo descargar la lista (\(e.localizedDescription)).") }
+            case .success(let data):
+                let text = String(decoding: data, as: UTF8.self)
+                let list = Playlist.parse(text)
+                self.playlistAccount = XtreamAccount.fromPlaylist(text)
+                if list.isEmpty {
+                    if !silent { self.openSetup("La dirección no contiene una lista M3U válida.") }
+                    return
+                }
+                try? data.write(to: self.listFile)
+                if list == self.channels { return }
+                let playing = self.channels.indices.contains(self.current) ? self.channels[self.current] : nil
+                self.channels = list
+                self.refreshGuide(force: false)
+                if let p = playing, let same = list.firstIndex(where: { $0.url == p.url || $0.name == p.name }) {
+                    self.current = same
+                } else if self.vod == nil && !self.browserOpen {
+                    self.status = nil
+                    self.play(self.startIndex())
+                } else {
+                    self.current = self.startIndex()
+                }
+            }
+        }
+    }
+
+    func refreshGuide(force: Bool) {
+        let wanted = Set(channels.map { $0.tvgId }.filter { !$0.isEmpty })
+        guard !wanted.isEmpty, let file = guideFile else { return }
+        let age = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate).map { Date().timeIntervalSince($0) } ?? .infinity
+        let parse: (Data) -> Void = { [weak self] data in
+            DispatchQueue.global(qos: .utility).async {
+                let map = GuideParser.parse(data: data, wanted: wanted)
+                DispatchQueue.main.async { self?.guide = map }
+            }
+        }
+        if force || age > 3 * 3600 {
+            Net.get(Self.guideURL) { r in
+                if case .success(let data) = r, !data.isEmpty {
+                    try? data.write(to: file)
+                    parse(data)
+                } else if let data = try? Data(contentsOf: file) {
+                    parse(data)
+                }
+            }
+        } else if let data = try? Data(contentsOf: file) {
+            parse(data)
+        }
+    }
+
+    var visibleChannels: [Channel] {
+        let q = Search.normalize(panelQuery.trimmingCharacters(in: .whitespaces))
+        return channels.filter { !hiddenChannels.contains($0.name) && (q.isEmpty || Search.normalize($0.name).contains(q)) }
+    }
+
+    var currentChannel: Channel? { channels.indices.contains(current) ? channels[current] : nil }
+
+    func programs(_ ch: Channel) -> [Program]? { guide[ch.tvgId] }
+
+    // MARK: - Live playback
+
+    func play(_ index: Int) {
+        guard !channels.isEmpty else { return }
+        zapTimer?.invalidate()
+        saveVodProgress()
+        vod = nil
+        showVodBar = false
+        shutter = true
+        aspect = "no"
+        mpv.setAspect("no")
+        current = max(0, min(index, channels.count - 1))
+        retries = 0
+        playToken += 1
+        status = nil
+        mpv.load(channels[current].url)
+        armStallWatch()
+        flashInfo()
+    }
+
+    private func armStallWatch() {
+        stallTimer?.invalidate()
+        let token = playToken
+        stallTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: false) { [weak self] _ in
+            guard let self = self, token == self.playToken, self.vod == nil, self.mpv.buffering || self.mpv.position == 0 else { return }
+            if self.retries < 3 {
+                self.retries += 1
+                self.status = "Reconectando… (\(self.retries)/3)"
+                if let ch = self.currentChannel { self.mpv.load(ch.url) }
+                self.armStallWatch()
+            } else {
+                self.status = "No se pudo reproducir \(self.currentChannel?.name ?? "el canal").\nPrueba otro canal."
+            }
+        }
+    }
+
+    private func playbackReady() {
+        stallTimer?.invalidate()
+        retries = 0
+        status = nil
+        shutter = false
+    }
+
+    private func playbackEnded(error: Bool, eof: Bool) {
+        if let w = vod {
+            if eof {
+                var done = w
+                done.position = mpv.duration > 0 ? mpv.duration : w.duration
+                done.duration = done.position
+                recordHistory(done)
+                if w.episode, let s = openSeries, let i = episodes.firstIndex(where: { $0.id == w.streamId }), i + 1 < episodes.count {
+                    playVod(episodeWatch(s, episodes[i + 1]))
+                } else {
+                    leaveVod()
+                }
+            } else if error {
+                retryCurrent()
+            }
+        } else if error || eof {
+            retryCurrent()
+        }
+    }
+
+    private func retryCurrent() {
+        let token = playToken
+        guard retries < 3 else {
+            status = "No se pudo reproducir \(vod?.title ?? currentChannel?.name ?? "el canal").\n" +
+                (vod != nil ? "Esc para volver." : "Prueba otro canal.")
+            return
+        }
+        retries += 1
+        status = "Reconectando… (\(retries)/3)"
+        DispatchQueue.main.asyncAfter(deadline: .now() + Double(retries) * 2) { [weak self] in
+            guard let self = self, token == self.playToken else { return }
+            if let w = self.vod, let acc = self.xtream() {
+                self.mpv.load(w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext), start: self.mpv.position)
+            } else if let ch = self.currentChannel {
+                self.mpv.load(ch.url)
+            }
+        }
+    }
+
+    private func neighbor(_ step: Int) -> Int {
+        var order = channels.indices.filter { !hiddenChannels.contains(channels[$0].name) }
+        if order.isEmpty { order = Array(channels.indices) }
+        guard let pos = order.firstIndex(of: current) else { return order.first(where: { $0 > current }) ?? order[0] }
+        return order[(pos + step + order.count) % order.count]
+    }
+
+    /// ↑↓ zapping: banner follows each press, the stream opens when presses stop.
+    func zap(_ step: Int) {
+        guard !channels.isEmpty, vod == nil else { return }
+        current = neighbor(step)
+        stallTimer?.invalidate()
+        mpv.stop()
+        shutter = true
+        status = nil
+        flashInfo()
+        zapTimer?.invalidate()
+        let target = current
+        zapTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in self?.play(target) }
+    }
+
+    func flashInfo() {
+        showInfo = true
+        infoTimer?.invalidate()
+        infoTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in self?.showInfo = false }
+    }
+
+    func togglePanel() {
+        if showPanel { showPanel = false; return }
+        showEPG = false
+        showInfo = false
+        panelQuery = ""
+        panelSelection = visibleChannels.firstIndex(where: { $0.number == currentChannel?.number }) ?? 0
+        withAnimation(.easeOut(duration: 0.2)) { showPanel = true }
+    }
+
+    func openEPG() {
+        guard vod == nil, !channels.isEmpty else { return }
+        showPanel = false
+        showInfo = false
+        let rows = epgRows
+        epgRow = rows.firstIndex(where: { $0.number == currentChannel?.number }) ?? 0
+        epgCursor = Date()
+        let half: TimeInterval = 1800
+        epgWindowStart = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970 / half) * half - half)
+        if guide.isEmpty { refreshGuide(force: false) }
+        withAnimation(.easeOut(duration: 0.22)) { showEPG = true }
+    }
+
+    func closeEPG() { withAnimation(.easeIn(duration: 0.22)) { showEPG = false } }
+
+    var epgRows: [Channel] {
+        let r = channels.filter { !hiddenChannels.contains($0.name) }
+        return r.isEmpty ? channels : r
+    }
+
+    func epgProgram(row: Int, at t: Date) -> Program? {
+        guard epgRows.indices.contains(row) else { return nil }
+        return programs(epgRows[row])?.first { $0.start <= t && $0.stop > t }
+    }
+
+    func epgMove(row step: Int) {
+        epgRow = max(0, min(epgRows.count - 1, epgRow + step))
+    }
+
+    func epgMove(time dir: Int) {
+        let list = epgRows.indices.contains(epgRow) ? programs(epgRows[epgRow]) : nil
+        let cur = epgProgram(row: epgRow, at: epgCursor)
+        var next: Date
+        if dir > 0 {
+            next = list?.first(where: { $0.start >= (cur?.stop ?? epgCursor.addingTimeInterval(1)) })?.start ?? epgCursor.addingTimeInterval(1800)
+            next = next.addingTimeInterval(1)
+        } else {
+            next = list?.last(where: { $0.stop <= (cur?.start ?? epgCursor) })?.start ?? epgCursor.addingTimeInterval(-1800)
+        }
+        let nowD = Date()
+        epgCursor = min(max(next, nowD.addingTimeInterval(-7200)), nowD.addingTimeInterval(36 * 3600))
+        let span: TimeInterval = 3 * 3600
+        if epgCursor < epgWindowStart { epgWindowStart = epgCursor.addingTimeInterval(-600) }
+        if epgCursor > epgWindowStart.addingTimeInterval(span - 900) { epgWindowStart = epgCursor.addingTimeInterval(-span / 3) }
+    }
+
+    func epgShift(hours: Double) {
+        epgWindowStart = epgWindowStart.addingTimeInterval(hours * 3600)
+    }
+
+    func playChannel(_ ch: Channel) {
+        guard let i = channels.firstIndex(where: { $0.number == ch.number }) else { return }
+        showPanel = false
+        closeEPG()
+        if i != current || vod != nil { play(i) } else { flashInfo() }
+    }
+
+    func toggleHidden(channel name: String) {
+        if hiddenChannels.contains(name) { hiddenChannels.remove(name) } else { hiddenChannels.insert(name) }
+        d.set(Array(hiddenChannels), forKey: "hide_ch")
+    }
+
+    // MARK: - Setup
+
+    func openSetup(_ message: String?) {
+        setupMessage = message ?? "Escribe la dirección de tu lista de canales (la misma del Roku)."
+        if listURL.isEmpty { listURL = "https://tinyurl.com/" }
+        mpv.stop()
+        showSetup = true
+    }
+
+    func saveSetup() {
+        let url = listURL.trimmingCharacters(in: .whitespaces)
+        guard url.hasPrefix("http"), url.count >= 12 else {
+            setupMessage = "La dirección debe empezar con https://"
+            return
+        }
+        listURL = url
+        d.set(url, forKey: "list")
+        try? FileManager.default.removeItem(at: listFile)
+        channels = []
+        start()
+    }
+
+    func xtream() -> XtreamAccount? {
+        if let a = playlistAccount { return a }
+        let a = Store.load("xtream", XtreamAccount.self)
+        return (a?.valid ?? false) ? a : nil
+    }
+
+    func saveAccount(_ acc: XtreamAccount, then series: Bool) {
+        guard acc.valid else {
+            accountMessage = "Completa servidor (https://…), usuario y clave."
+            return
+        }
+        Store.save("xtream", acc)
+        categories = [:]
+        itemCache = [:]
+        catalogCache = [:]
+        showAccount = false
+        openBrowser(series: series)
+    }
+
+    // MARK: - Movies & series playback
+
+    func playVod(_ w: Watch) {
+        guard let acc = xtream() else { return }
+        saveVodProgress()
+        zapTimer?.invalidate()
+        stallTimer?.invalidate()
+        browserOpen = false
+        showPanel = false
+        showInfo = false
+        shutter = true
+        aspect = "no"
+        mpv.setAspect("no")
+        retries = 0
+        playToken += 1
+        let saved = history.first { $0.id == w.id }
+        let resume = (saved.map { !$0.finished && $0.position > 10 } ?? false) ? saved!.position : 0
+        var entry = w
+        entry.position = resume
+        entry.duration = saved?.duration ?? 0
+        vod = entry
+        recordHistory(entry)
+        status = resume > 0 ? "Cargando…\nContinuando desde \(clock(resume))" : nil
+        mpv.load(w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext), start: resume)
+        flashVodBar()
+        saveTimer?.invalidate()
+        saveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            guard let self = self, self.vod != nil, !self.mpv.paused else { return }
+            self.saveVodProgress()
+        }
+    }
+
+    func saveVodProgress() {
+        guard var w = vod else { return }
+        w.position = max(0, mpv.position)
+        if mpv.duration > 0 { w.duration = mpv.duration }
+        vod = w
+        recordHistory(w)
+    }
+
+    private func recordHistory(_ w: Watch) {
+        var entry = w
+        entry.updated = Date()
+        history.removeAll { $0.id == w.id }
+        history.insert(entry, at: 0)
+        if history.count > 60 { history = Array(history.prefix(60)) }
+        Store.save("history", history)
+    }
+
+    func leaveVod() {
+        saveVodProgress()
+        saveTimer?.invalidate()
+        vod = nil
+        showVodBar = false
+        status = nil
+        mpv.stop()
+        withAnimation(.easeOut(duration: 0.2)) { browserOpen = true }
+    }
+
+    func flashVodBar() {
+        withAnimation(.easeOut(duration: 0.15)) { showVodBar = true }
+        vodBarTimer?.invalidate()
+        vodBarTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
+            guard let self = self, !self.mpv.paused else { return }
+            withAnimation(.easeIn(duration: 0.2)) { self.showVodBar = false }
+        }
+    }
+
+    func seek(_ seconds: Double) {
+        mpv.seek(by: seconds)
+        flashVodBar()
+    }
+
+    func togglePause() {
+        mpv.togglePause()
+        if !mpv.paused { saveVodProgress() }
+        flashVodBar()
+    }
+
+    func setAspect(_ a: String) {
+        aspect = a
+        mpv.setAspect(a)
+    }
+
+    func clock(_ s: Double) -> String {
+        let t = Int(max(0, s))
+        return t >= 3600 ? String(format: "%d:%02d:%02d", t / 3600, (t % 3600) / 60, t % 60) : String(format: "%02d:%02d", t / 60, t % 60)
+    }
+
+    // MARK: - Browser
+
+    func openBrowser(series: Bool) {
+        guard xtream() != nil else {
+            accountMessage = playlistAccount == nil
+                ? "Para ver películas y series escribe tu cuenta Xtream (se guarda solo en este Mac)."
+                : ""
+            pendingSeries = series
+            showAccount = true
+            return
+        }
+        showPanel = false
+        showInfo = false
+        showEPG = false
+        zapTimer?.invalidate()
+        stallTimer?.invalidate()
+        mpv.stop()
+        if browserSeries != series {
+            browserSeries = series
+            openSeries = nil
+            entries = []
+            searchOpen = false
+            searchText = ""
+            gridMode = .category
+        }
+        withAnimation(.easeOut(duration: 0.2)) { browserOpen = true }
+        if categories[series] == nil { loadCategories() } else if entries.isEmpty { selectCategory(selectedCat[series] ?? defaultCategory()?.id) }
+    }
+
+    var pendingSeries = false
+
+    func closeBrowser() {
+        browserOpen = false
+        openSeries = nil
+        if !channels.isEmpty { play(current) }
+    }
+
+    func tab(_ t: Tab) {
+        switch t {
+        case .live:
+            if browserOpen { closeBrowser() }
+            if !showPanel { togglePanel() }
+        case .movies: openBrowser(series: false)
+        case .series: openBrowser(series: true)
+        }
+    }
+
+    var hiddenCats: Set<String> { browserSeries ? hiddenSeriesCats : hiddenMovieCats }
+
+    var visibleCats: [Category] { (categories[browserSeries] ?? []).filter { !hiddenCats.contains($0.id) } }
+
+    func defaultCategory() -> Category? {
+        let list = visibleCats
+        func key(_ c: Category) -> String { Search.normalize(c.name).trimmingCharacters(in: .whitespaces) }
+        if browserSeries {
+            return list.first { key($0) == "hbo" } ?? list.first { key($0).contains("hbo") } ?? list.first
+        }
+        return list.first { key($0) == "estrenos" } ?? list.first { key($0).contains("estreno") && !key($0).contains("cam") } ?? list.first
+    }
+
+    private func loadCategories() {
+        guard let acc = xtream() else { return }
+        let series = browserSeries
+        loadToken += 1
+        let token = loadToken
+        gridMessage = "Cargando categorías…"
+        Xtream.categories(acc, series: series) { [weak self] r in
+            guard let self = self, token == self.loadToken, series == self.browserSeries else { return }
+            switch r {
+            case .success(let cats):
+                self.categories[series] = cats
+                self.selectCategory(self.selectedCat[series] ?? self.defaultCategory()?.id)
+            case .failure(let e):
+                self.gridMessage = "No se pudo cargar: \(e.localizedDescription)"
+            }
+        }
+    }
+
+    func selectCategory(_ id: String?) {
+        searchOpen = false
+        searchText = ""
+        guard let id = id, let cat = visibleCats.first(where: { $0.id == id }) ?? defaultCategory() else {
+            entries = []
+            gridMessage = (categories[browserSeries] ?? []).isEmpty ? "El proveedor no tiene categorías aquí." : "Todas las categorías están ocultas (usa el filtro)."
+            return
+        }
+        let series = browserSeries
+        selectedCat[series] = cat.id
+        gridMode = .category
+        gridLabel = cat.name
+        let key = "\(series):\(cat.id)"
+        if let cached = itemCache[key] {
+            entries = cached.map { .item($0) }
+            gridMessage = cached.isEmpty ? "Categoría vacía." : nil
+            return
+        }
+        guard let acc = xtream() else { return }
+        loadToken += 1
+        let token = loadToken
+        entries = []
+        gridMessage = "Cargando \(cat.name)…"
+        Xtream.items(acc, series: series, category: cat.id) { [weak self] r in
+            guard let self = self else { return }
+            if case .success(let list) = r { self.itemCache[key] = list }
+            guard token == self.loadToken, series == self.browserSeries else { return }
+            switch r {
+            case .success(let list):
+                self.entries = list.map { .item($0) }
+                self.gridMessage = list.isEmpty ? "Categoría vacía." : nil
+            case .failure(let e):
+                self.gridMessage = "No se pudo cargar: \(e.localizedDescription)"
+            }
+        }
+    }
+
+    var continueList: [Watch] {
+        var seen = Set<String>()
+        return history.filter { w in
+            w.episode == browserSeries && !w.finished && (!w.episode || seen.insert(w.seriesId.isEmpty ? w.streamId : w.seriesId).inserted)
+        }
+    }
+
+    var laterList: [VodItem] { later.filter { $0.series == browserSeries } }
+
+    func showAllTop() {
+        searchOpen = false
+        if topMode == 0 {
+            gridMode = .continueAll
+            gridLabel = "Seguir viendo · todo"
+            entries = continueList.map { .watch($0) }
+        } else {
+            gridMode = .laterAll
+            gridLabel = "Ver más tarde · todo"
+            entries = laterList.map { .item($0) }
+        }
+        gridMessage = nil
+    }
+
+    func scheduleSearch() {
+        searchDebounce?.invalidate()
+        guard searchText.trimmingCharacters(in: .whitespaces).count >= 2 else { return }
+        searchDebounce = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { [weak self] _ in self?.runSearch() }
+    }
+
+    func runSearch() {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard query.count >= 2, let acc = xtream() else { return }
+        let series = browserSeries
+        gridMode = .search
+        loadToken += 1
+        let token = loadToken
+        let show: ([VodItem]) -> Void = { [weak self] all in
+            guard let self = self else { return }
+            let q = Search.normalize(query)
+            let hidden = self.hiddenCats
+            let found = all.filter { !hidden.contains($0.categoryId) && $0.searchKey.contains(q) }
+            self.entries = found.prefix(600).map { .item($0) }
+            self.gridLabel = "Resultados para “\(query)” (\(found.count))"
+            self.gridMessage = found.isEmpty ? "Sin resultados para “\(query)”." : nil
+        }
+        if let cached = catalogCache[series] { show(cached); return }
+        entries = []
+        gridLabel = "Buscando “\(query)”…"
+        gridMessage = "Buscando en todo el catálogo…\nLa primera búsqueda tarda un poco."
+        Xtream.items(acc, series: series, category: nil) { [weak self] r in
+            guard let self = self else { return }
+            if case .success(let list) = r { self.catalogCache[series] = list }
+            guard token == self.loadToken, series == self.browserSeries else { return }
+            switch r {
+            case .success(let list): show(list)
+            case .failure(let e): self.gridMessage = "No se pudo buscar: \(e.localizedDescription)"
+            }
+        }
+    }
+
+    func closeSearch() {
+        searchOpen = false
+        searchText = ""
+        if gridMode == .search { selectCategory(selectedCat[browserSeries] ?? defaultCategory()?.id) }
+    }
+
+    func open(_ entry: GridEntry) {
+        switch entry {
+        case .item(let v):
+            if v.series { openSeriesView(v) } else { playVod(Watch(episode: false, streamId: v.streamId, ext: v.ext, title: v.title, subtitle: v.year, poster: v.poster)) }
+        case .watch(let w):
+            if w.episode, !w.seriesId.isEmpty, openSeries?.streamId != w.seriesId {
+                let s = VodItem(series: true, streamId: w.seriesId, title: w.title, poster: w.poster, ext: w.ext, year: "", rating: "", categoryId: "")
+                loadEpisodes(s, playAfter: w)
+            } else {
+                playVod(w)
+            }
+        }
+    }
+
+    func isLater(_ v: VodItem) -> Bool { later.contains { $0.id == v.id } }
+
+    func toggleLater(_ v: VodItem) {
+        if isLater(v) { later.removeAll { $0.id == v.id } } else { later.insert(v, at: 0); topMode = 1 }
+        Store.save("later", later)
+        if gridMode == .laterAll { entries = laterList.map { .item($0) } }
+    }
+
+    func removeFromHistory(_ w: Watch) {
+        if w.episode, !w.seriesId.isEmpty { history.removeAll { $0.seriesId == w.seriesId } } else { history.removeAll { $0.id == w.id } }
+        Store.save("history", history)
+        if gridMode == .continueAll { entries = continueList.map { .watch($0) } }
+    }
+
+    func watchFor(_ v: VodItem) -> Watch? { history.first { $0.id == "m:" + v.streamId } }
+
+    // MARK: Series
+
+    func openSeriesView(_ s: VodItem) {
+        openSeries = s
+        episodes = []
+        seriesInfo = "Cargando episodios…"
+        loadEpisodes(s, playAfter: nil)
+    }
+
+    func episodeWatch(_ s: VodItem, _ e: Episode) -> Watch {
+        Watch(episode: true, streamId: e.id, ext: e.ext, title: s.title, subtitle: "T\(e.season) · E\(e.number)  \(e.title)",
+              poster: s.poster, seriesId: s.streamId)
+    }
+
+    var seasons: [Int] { Array(Set(episodes.map { $0.season })).sorted() }
+    var seasonEpisodes: [Episode] { episodes.filter { $0.season == season } }
+
+    private func loadEpisodes(_ s: VodItem, playAfter: Watch?) {
+        guard let acc = xtream() else { return }
+        loadToken += 1
+        let token = loadToken
+        Xtream.episodes(acc, seriesId: s.streamId) { [weak self] r in
+            guard let self = self, token == self.loadToken else { return }
+            let list = (try? r.get()) ?? []
+            self.openSeries = s
+            self.episodes = list
+            let resume = list.first { e in self.history.first { $0.id == "e:" + e.id }.map { !$0.finished } ?? false }
+            self.season = list.first { $0.id == playAfter?.streamId }?.season ?? resume?.season ?? self.seasons.first ?? 0
+            if case .failure(let e) = r {
+                self.seriesInfo = "No se pudo cargar: \(e.localizedDescription)"
+            } else {
+                let n = self.seasons.count
+                self.seriesInfo = list.isEmpty ? "Esta serie no tiene episodios." : "\(n) temporada\(n == 1 ? "" : "s")  ·  \(list.count) episodios"
+            }
+            if let w = playAfter { self.playVod(w) }
+        }
+    }
+
+    func closeSeries() {
+        loadToken += 1
+        openSeries = nil
+        episodes = []
+    }
+
+    func browserBack() {
+        if openSeries != nil { closeSeries() }
+        else if searchOpen || gridMode == .search { closeSearch() }
+        else if gridMode == .continueAll || gridMode == .laterAll { selectCategory(selectedCat[browserSeries] ?? defaultCategory()?.id) }
+        else { closeBrowser() }
+    }
+
+    // MARK: Hidden categories
+
+    func toggleHidden(category id: String) {
+        if browserSeries {
+            if hiddenSeriesCats.contains(id) { hiddenSeriesCats.remove(id) } else { hiddenSeriesCats.insert(id) }
+            d.set(Array(hiddenSeriesCats), forKey: "hide_series")
+        } else {
+            if hiddenMovieCats.contains(id) { hiddenMovieCats.remove(id) } else { hiddenMovieCats.insert(id) }
+            d.set(Array(hiddenMovieCats), forKey: "hide_vod")
+        }
+    }
+
+    func closeFilter() {
+        filterKind = nil
+        if browserOpen, let sel = selectedCat[browserSeries], hiddenCats.contains(sel) {
+            selectCategory(defaultCategory()?.id)
+        }
+    }
+
+    // MARK: - Keyboard
+
+    private func textFieldFocused() -> Bool {
+        NSApp.keyWindow?.firstResponder is NSTextView
+    }
+
+    /// Returns true when the key was handled.
+    private func handleKey(_ e: NSEvent) -> Bool {
+        let code = e.keyCode
+        let esc: UInt16 = 53, enter: UInt16 = 36, space: UInt16 = 49
+        let left: UInt16 = 123, right: UInt16 = 124, down: UInt16 = 125, up: UInt16 = 126
+        if code == esc { back(); return true }
+        if textFieldFocused() { return false }
+        let ch = e.charactersIgnoringModifiers?.lowercased() ?? ""
+        if ch == "f", e.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+            NSApp.keyWindow?.toggleFullScreen(nil)
+            return true
+        }
+        if showSetup || showAccount || filterKind != nil { return false }
+        if showEPG {
+            switch code {
+            case up: epgMove(row: -1)
+            case down: epgMove(row: 1)
+            case left: epgMove(time: -1)
+            case right: epgMove(time: 1)
+            case enter: if epgRows.indices.contains(epgRow) { playChannel(epgRows[epgRow]) }
+            default: return false
+            }
+            return true
+        }
+        if showPanel {
+            let list = visibleChannels
+            switch code {
+            case up: panelSelection = max(0, panelSelection - 1)
+            case down: panelSelection = min(list.count - 1, panelSelection + 1)
+            case enter: if list.indices.contains(panelSelection) { playChannel(list[panelSelection]) }
+            case left: showPanel = false
+            default: return false
+            }
+            return true
+        }
+        if browserOpen { return false }
+        if vod != nil {
+            switch code {
+            case space, enter: togglePause()
+            case left: seek(-15)
+            case right: seek(15)
+            case up, down: flashVodBar()
+            default: return false
+            }
+            return true
+        }
+        switch code {
+        case down: zap(1)
+        case up: zap(-1)
+        case left, enter: togglePanel()
+        case right: openEPG()
+        case space: flashInfo()
+        default:
+            if ch == "g" { openEPG(); return true }
+            if ch == "i" { flashInfo(); return true }
+            if let n = Int(ch), (0...9).contains(n) { typeDigit(n); return true }
+            return false
+        }
+        return true
+    }
+
+    @Published var digits = ""
+    private var digitTimer: Timer?
+
+    private func typeDigit(_ n: Int) {
+        if digits.count >= 3 { digits = "" }
+        digits += String(n)
+        digitTimer?.invalidate()
+        digitTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            if let v = Int(self.digits), v >= 1, v <= self.channels.count { self.play(v - 1) }
+            self.digits = ""
+        }
+    }
+
+    func back() {
+        if filterKind != nil { closeFilter() }
+        else if showAccount { showAccount = false; if !browserOpen && vod == nil { play(current) } }
+        else if showSetup, !channels.isEmpty { showSetup = false; play(current) }
+        else if showEPG { closeEPG() }
+        else if showPanel { showPanel = false }
+        else if browserOpen { browserBack() }
+        else if vod != nil { leaveVod() }
+        else if showInfo { showInfo = false }
+    }
+
+    /// Click on the video.
+    func tapVideo() {
+        if showPanel { showPanel = false; return }
+        if showEPG { closeEPG(); return }
+        if vod != nil {
+            if showVodBar { withAnimation { showVodBar = false } } else { flashVodBar() }
+            return
+        }
+        if showInfo { showInfo = false } else { flashInfo() }
+    }
+}
