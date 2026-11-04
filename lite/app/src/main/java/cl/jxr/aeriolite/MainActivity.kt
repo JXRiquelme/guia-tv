@@ -8,7 +8,12 @@ import android.os.Build
 import android.util.Rational
 import android.content.Context
 import android.content.SharedPreferences
+import android.animation.ValueAnimator
 import android.graphics.Color
+import android.graphics.RenderEffect
+import android.graphics.Shader
+import android.graphics.drawable.LayerDrawable
+import android.view.TextureView
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
@@ -86,10 +91,15 @@ class MainActivity : Activity() {
         const val MODE_SEARCH = 2
         const val MODE_LATER = 3
 
-        const val ACCENT = 0xFF7FD3FF.toInt()
-        const val MUTED = 0xFFB8C7F0.toInt()
-        const val HINT = 0xFF8FA0CC.toInt()
-        const val BLUE = 0xFF2F6FEB.toInt()
+        /** Phone/tablet app: "liquid glass" look. Android TV app: solid colours (lighter to draw). */
+        const val GLASS = !BuildConfig.TV
+        val ACCENT = if (GLASS) 0xFFFFD27A.toInt() else 0xFF7FD3FF.toInt()
+        val MUTED = if (GLASS) 0xFFD0D3DA.toInt() else 0xFFB8C7F0.toInt()
+        val HINT = if (GLASS) 0xFFA3A8B3.toInt() else 0xFF8FA0CC.toInt()
+        /** Selection / focus. */
+        val BLUE = if (GLASS) 0x4DFFFFFF else 0xFF2F6FEB.toInt()
+        /** Active chip / tab. */
+        val CHIP = if (GLASS) 0x3DFFFFFF else 0xFF3B5BA8.toInt()
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -123,7 +133,8 @@ class MainActivity : Activity() {
 
     // Live views
     private lateinit var root: FrameLayout
-    private lateinit var surface: SurfaceView
+    /** SurfaceView on TV (cheapest); TextureView on phones so it can be blurred behind the glass. */
+    private lateinit var surface: View
     private lateinit var shutter: View
     private lateinit var status: TextView
     private lateinit var info: LinearLayout
@@ -494,7 +505,8 @@ class MainActivity : Activity() {
             .setMediaSourceFactory(DefaultMediaSourceFactory(http, extractors))
             .setLoadControl(load)
             .build()
-        p.setVideoSurfaceView(surface)
+        val sv = surface
+        if (sv is SurfaceView) p.setVideoSurfaceView(sv) else p.setVideoTextureView(sv as TextureView)
         applyLanguages(p)
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
@@ -923,7 +935,7 @@ class MainActivity : Activity() {
     private fun markTabs(tabs: List<TextView>, active: Int) {
         tabs.forEachIndexed { i, t ->
             t.setTextColor(if (i == active) ACCENT else Color.WHITE)
-            t.background = focusBg(10, if (i == active) 0x332F6FEB else Color.TRANSPARENT)
+            t.background = focusBg(10, if (i == active) (if (GLASS) 0x29FFFFFF else 0x332F6FEB) else Color.TRANSPARENT)
         }
     }
 
@@ -1061,7 +1073,7 @@ class MainActivity : Activity() {
         val sel = if (gridMode == MODE_CATEGORY) selectedCat[browserSeries]?.id else null
         chips.forEachIndexed { i, chip ->
             val active = visibleCats.getOrNull(i)?.id == sel
-            chip.background = focusBg(18, if (active) 0xFF3B5BA8.toInt() else 0x22FFFFFF)
+            chip.background = focusBg(18, if (active) CHIP else 0x22FFFFFF)
             chip.setTextColor(if (active) Color.WHITE else MUTED)
         }
     }
@@ -1129,7 +1141,7 @@ class MainActivity : Activity() {
         topToggleLater.visibility = if (saved.isEmpty()) View.GONE else View.VISIBLE
         listOf(topToggleContinue to 0, topToggleLater to 1).forEach { (t, mode) ->
             val active = mode == topMode
-            t.background = focusBg(16, if (active) 0xFF3B5BA8.toInt() else 0x22FFFFFF)
+            t.background = focusBg(16, if (active) CHIP else 0x22FFFFFF)
             t.setTextColor(if (active) Color.WHITE else MUTED)
         }
         val entries: List<Any> = if (topMode == 0) cont else saved
@@ -1248,7 +1260,7 @@ class MainActivity : Activity() {
         for (i in 0 until seasonRow.childCount) {
             val chip = seasonRow.getChildAt(i) as TextView
             val active = chip.tag == n
-            chip.background = focusBg(16, if (active) 0xFF3B5BA8.toInt() else 0x22FFFFFF)
+            chip.background = focusBg(16, if (active) CHIP else 0x22FFFFFF)
             chip.setTextColor(if (active) Color.WHITE else MUTED)
             if (active) seasonScroll.post { seasonScroll.smoothScrollTo((chip.left - dp(40)).coerceAtLeast(0), 0) }
         }
@@ -2259,6 +2271,62 @@ class MainActivity : Activity() {
         cornerRadius = dp(radius).toFloat()
     }
 
+    /**
+     * Floating surface. TV app: the plain [tvColor] box. Phone app: "liquid glass" — a
+     * translucent smoky fill, a soft light sheen at the top and a thin bright rim.
+     * [level] 0 = light (bars, buttons), 1 = panels, 2 = dialogs (more opaque, easier to read).
+     */
+    private fun surfaceBg(tvColor: Int, tvRadius: Int, level: Int = 0, radius: Int = tvRadius + 8): Drawable {
+        if (!GLASS) return box(tvColor, tvRadius)
+        val r = dp(radius).toFloat()
+        val (top, bottom) = when (level) {
+            0 -> 0x80262A33.toInt() to 0x99121418.toInt()
+            1 -> 0xB3262A33.toInt() to 0xC70F1114.toInt()
+            else -> 0xD92A2E37.toInt() to 0xE6121418.toInt()
+        }
+        val fill = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(top, bottom)).apply { cornerRadius = r }
+        val sheen = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(0x2EFFFFFF, 0x0AFFFFFF, 0x00FFFFFF)).apply { cornerRadius = r }
+        val rim = GradientDrawable().apply {
+            setColor(Color.TRANSPARENT)
+            cornerRadius = r
+            setStroke(dp(1).coerceAtLeast(1), 0x40FFFFFF)
+        }
+        return LayerDrawable(arrayOf(fill, sheen, rim))
+    }
+
+    /** Applies [surfaceBg] plus a soft shadow on phones. */
+    private fun View.glassy(tvColor: Int, tvRadius: Int, level: Int = 0, radius: Int = tvRadius + 8) {
+        background = surfaceBg(tvColor, tvRadius, level, radius)
+        if (GLASS && Build.VERSION.SDK_INT >= 21) elevation = dp(if (level == 0) 6 else 10).toFloat()
+    }
+
+    // ---------------------------------------------------------------- blur behind the glass (phones, Android 12+)
+
+    private var blurred = false
+    private var blurRadius = 0f
+    private var blurAnim: ValueAnimator? = null
+
+    /** Blurs the video while a panel, the guide or a menu is open (like ColorOS / iOS). */
+    private fun updateBackdrop() {
+        if (!GLASS || Build.VERSION.SDK_INT < 31 || !::surface.isInitialized) return
+        val want = !(Build.VERSION.SDK_INT >= 24 && isInPictureInPictureMode) && (panel.visibility == View.VISIBLE || epgBox.visibility == View.VISIBLE ||
+            pickerLayer.visibility == View.VISIBLE || filterBox.visibility == View.VISIBLE ||
+            setup.visibility == View.VISIBLE || account.visibility == View.VISIBLE)
+        if (want == blurred) return
+        blurred = want
+        blurAnim?.cancel()
+        blurAnim = ValueAnimator.ofFloat(blurRadius, if (want) dp(26).toFloat() else 0f).apply {
+            duration = 240
+            addUpdateListener {
+                blurRadius = it.animatedValue as Float
+                surface.setRenderEffect(if (blurRadius < 0.5f) null
+                    else RenderEffect.createBlurEffect(blurRadius, blurRadius, Shader.TileMode.CLAMP))
+            }
+            start()
+        }
+    }
+
     /** Blue when focused (remote) or pressed (touch), [base] otherwise. */
     private fun focusBg(radius: Int = 10, base: Int = Color.TRANSPARENT): Drawable = StateListDrawable().apply {
         addState(intArrayOf(android.R.attr.state_focused), box(BLUE, radius))
@@ -2338,8 +2406,9 @@ class MainActivity : Activity() {
             isFocusableInTouchMode = true
             addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
             setOnTouchListener { _, e -> onTouch(e); true }
+            if (GLASS) viewTreeObserver.addOnGlobalLayoutListener { updateBackdrop() }
         }
-        surface = SurfaceView(this)
+        surface = if (GLASS) TextureView(this) else SurfaceView(this)
         root.addView(surface, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
         shutter = View(this).apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
         root.addView(shutter, FrameLayout.LayoutParams(-1, -1))
@@ -2348,7 +2417,8 @@ class MainActivity : Activity() {
         card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(0xFF0B1230.toInt())
+            if (GLASS) background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xFF23262E.toInt(), 0xFF08090B.toInt()))
+            else setBackgroundColor(0xFF0B1230.toInt())
             visibility = View.GONE
         }
         cardLogo = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
@@ -2366,7 +2436,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             if (compact) setPadding(dp(12), dp(8), dp(10), dp(8)) else setPadding(dp(20), dp(14), dp(20), dp(14))
-            background = box(0xE60A1E5A.toInt(), if (compact) 12 else 14)
+            glassy(0xE60A1E5A.toInt(), if (compact) 12 else 14)
             visibility = View.GONE
         }
         infoLogo = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
@@ -2406,7 +2476,7 @@ class MainActivity : Activity() {
             setImageResource(icon)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             setPadding(dp(11), dp(11), dp(11), dp(11))
-            background = box(0xE60A1E5A.toInt(), 24)
+            glassy(0xE60A1E5A.toInt(), 24)
             isClickable = true
             setOnClickListener { action() }
         }
@@ -2434,7 +2504,7 @@ class MainActivity : Activity() {
         vodBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22), dp(14), dp(22), dp(14))
-            background = box(0xE60A1E5A.toInt(), 14)
+            glassy(0xE60A1E5A.toInt(), 14)
             visibility = View.GONE
         }
         vodTitle = text(24f, bold = true)
@@ -2510,7 +2580,7 @@ class MainActivity : Activity() {
             maxLines = 3
             gravity = Gravity.CENTER
             setPadding(dp(24), dp(14), dp(24), dp(14))
-            background = box(0xCC000000.toInt())
+            glassy(0xCC000000.toInt(), 12, 1)
             visibility = View.GONE
         }
         root.addView(status, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
@@ -2519,7 +2589,7 @@ class MainActivity : Activity() {
         panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isClickable = true
-            setBackgroundColor(0xF20A1238.toInt())
+            if (GLASS) glassy(0, 0, 1, 26) else setBackgroundColor(0xF20A1238.toInt())
             setPadding(dp(14), dp(14), dp(14), dp(10))
             visibility = View.GONE
         }
@@ -2559,13 +2629,16 @@ class MainActivity : Activity() {
         panel.addView(text(13f, HINT).apply {
             this.text = "OK: ver  ·  Atrás: cerrar  ·  ▲▼ en pantalla cambia canal"
         })
-        root.addView(panel, FrameLayout.LayoutParams(dp(400), -1, Gravity.START))
+        root.addView(panel, FrameLayout.LayoutParams(dp(400), -1, Gravity.START).apply {
+            if (GLASS) setMargins(dp(10), dp(10), 0, dp(10))
+        })
 
         // Movies / series browser
         browser = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isClickable = true
-            setBackgroundColor(0xFA081030.toInt())
+            if (GLASS) background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xFA1A1C22.toInt(), 0xFF070809.toInt()))
+            else setBackgroundColor(0xFA081030.toInt())
             setPadding(dp(24), dp(14), dp(24), dp(4))
             visibility = View.GONE
         }
@@ -2662,13 +2735,13 @@ class MainActivity : Activity() {
         seriesView = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             isClickable = true
-            setBackgroundColor(0xFF081030.toInt())
+            setBackgroundColor(if (GLASS) 0xFF0C0D10.toInt() else 0xFF081030.toInt())
             visibility = View.GONE
         }
         val seriesLeft = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         seriesPoster = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            background = box(0xFF141C3A.toInt(), 8)
+            background = box(if (GLASS) 0xFF1E2027.toInt() else 0xFF141C3A.toInt(), 8)
         }
         seriesLeft.addView(seriesPoster, LinearLayout.LayoutParams(dp(180), dp(270)))
         seriesTitle = text(20f, bold = true).apply { maxLines = 3 }
@@ -2705,7 +2778,7 @@ class MainActivity : Activity() {
 
         numberView = text(48f, bold = true).apply {
             setPadding(dp(18), dp(6), dp(18), dp(6))
-            background = box(0xCC000000.toInt())
+            glassy(0xCC000000.toInt(), 12, 1)
             visibility = View.GONE
         }
         root.addView(numberView, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
@@ -2717,7 +2790,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             isClickable = true
             setPadding(dp(24), dp(20), dp(24), dp(16))
-            background = box(0xFF0A1E5A.toInt(), 16)
+            glassy(0xFF0A1E5A.toInt(), 16, 2)
             visibility = View.GONE
         }
         filterTitle = text(22f, bold = true)
@@ -2745,7 +2818,7 @@ class MainActivity : Activity() {
         epgBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isClickable = true
-            setBackgroundColor(0xF2081030.toInt())
+            if (GLASS) glassy(0, 0, 1, 26) else setBackgroundColor(0xF2081030.toInt())
             setPadding(dp(20), dp(12), dp(20), dp(10))
             visibility = View.GONE
         }
@@ -2780,7 +2853,9 @@ class MainActivity : Activity() {
         }
         epgBox.addView(epgView, LinearLayout.LayoutParams(-1, 0, 1f))
         // The guide is a panel on the right (the channel list is on the left); video stays visible at the left.
-        root.addView(epgBox, FrameLayout.LayoutParams(-1, -1, Gravity.END))
+        root.addView(epgBox, FrameLayout.LayoutParams(-1, -1, Gravity.END).apply {
+            if (GLASS) setMargins(0, dp(10), dp(10), dp(10))
+        })
         root.post {
             (epgBox.layoutParams as FrameLayout.LayoutParams).width = (root.width * 0.72f).toInt()
             epgBox.requestLayout()
@@ -2797,7 +2872,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             isClickable = true
             setPadding(dp(20), dp(18), dp(20), dp(14))
-            background = box(0xF20A1E5A.toInt(), 16)
+            glassy(0xF20A1E5A.toInt(), 16, 2)
         }
         pickerTitle = text(21f, bold = true)
         pickerBox.addView(pickerTitle, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
@@ -2825,7 +2900,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_HORIZONTAL
             isClickable = true
             setPadding(dp(36), dp(28), dp(36), dp(28))
-            background = box(0xFF0A1E5A.toInt(), 16)
+            glassy(0xFF0A1E5A.toInt(), 16, 2)
             visibility = View.GONE
         }
         setup.addView(text(30f, bold = true).apply { this.text = "AerioTV Lite" })
@@ -2849,7 +2924,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_HORIZONTAL
             isClickable = true
             setPadding(dp(36), dp(28), dp(36), dp(28))
-            background = box(0xFF0A1E5A.toInt(), 16)
+            glassy(0xFF0A1E5A.toInt(), 16, 2)
             visibility = View.GONE
         }
         account.addView(text(28f, bold = true).apply { this.text = "Películas y series" })
@@ -2940,7 +3015,7 @@ class MainActivity : Activity() {
         val frame = FrameLayout(this@MainActivity)
         val poster = ImageView(this@MainActivity).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            background = box(0xFF141C3A.toInt(), 8)
+            background = box(if (GLASS) 0xFF1E2027.toInt() else 0xFF141C3A.toInt(), 8)
         }
         frame.addView(poster, FrameLayout.LayoutParams(-1, -1))
         val placeholder = text(15f, MUTED).apply {
