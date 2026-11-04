@@ -54,10 +54,10 @@ struct RootView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                let progress = min(1, abs(app.dragY) / max(1, geo.size.height))
+                let progress: Double = Double(min(1, abs(app.dragY) / max(1, geo.size.height)))
                 VideoView()
-                    .scaleEffect(1 - progress * 0.08)
-                    .opacity(1 - progress * 0.6)
+                    .scaleEffect(CGFloat(1.0 - progress * 0.08))
+                    .opacity(1.0 - progress * 0.6)
                     .offset(y: app.dragY * 0.35)
                 if app.shutter && app.dragTarget == nil { Color.black }
                 if let t = app.dragTarget {
