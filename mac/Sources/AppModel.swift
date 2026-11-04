@@ -1,5 +1,6 @@
 import Cocoa
 import SwiftUI
+import AVFoundation
 
 enum GridEntry: Identifiable, Hashable {
     case item(VodItem)
@@ -48,6 +49,20 @@ final class AppModel: ObservableObject {
     @Published var showAccount = false
     @Published var accountMessage = ""
     var playlistAccount: XtreamAccount?
+
+    // Touch / trackpad: vertical channel drag
+    @Published var dragY: CGFloat = 0
+    @Published var dragTarget: Int?
+    @Published var cardChannel: Int?
+    @Published var showTopButtons = false
+    @Published var mini = false
+    @Published var airplayActive = false
+    @Published var airplayNotice = false
+    private var savedFrame: NSRect?
+    private var scrollMonitor: Any?
+    private var gesture = (dx: CGFloat(0), dy: CGFloat(0), axis: 0) // axis 0 undecided, 1 horizontal, 2 vertical
+    var airplayPlayer: AVPlayer?
+    private var airplayObserver: NSKeyValueObservation?
 
     // Movies / series playback
     @Published var vod: Watch?
@@ -105,6 +120,10 @@ final class AppModel: ObservableObject {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self = self else { return e }
             return self.handleKey(e) ? nil : e
+        }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] e in
+            guard let self = self else { return e }
+            return self.handleScroll(e) ? nil : e
         }
         clockTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -247,6 +266,7 @@ final class AppModel: ObservableObject {
         retries = 0
         status = nil
         shutter = false
+        if cardChannel != nil { withAnimation(.easeOut(duration: 0.25)) { cardChannel = nil } }
     }
 
     private func playbackEnded(error: Bool, eof: Bool) {
@@ -309,10 +329,16 @@ final class AppModel: ObservableObject {
         zapTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in self?.play(target) }
     }
 
-    func flashInfo() {
+    func flashInfo(withButtons: Bool = false) {
         showInfo = true
+        if withButtons { showTopButtons = true }
         infoTimer?.invalidate()
-        infoTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in self?.showInfo = false }
+        infoTimer = Timer.scheduledTimer(withTimeInterval: withButtons ? 6 : 5, repeats: false) { [weak self] _ in
+            withAnimation(.easeIn(duration: 0.2)) {
+                self?.showInfo = false
+                if self?.vod == nil { self?.showTopButtons = false }
+            }
+        }
     }
 
     func togglePanel() {
@@ -452,6 +478,7 @@ final class AppModel: ObservableObject {
         status = resume > 0 ? "Cargando…\nContinuando desde \(clock(resume))" : nil
         mpv.load(w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext), start: resume)
         flashVodBar()
+        prepareAirPlay()
         saveTimer?.invalidate()
         saveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             guard let self = self, self.vod != nil, !self.mpv.paused else { return }
@@ -477,6 +504,9 @@ final class AppModel: ObservableObject {
     }
 
     func leaveVod() {
+        if airplayActive { airplayPlayer?.pause(); airplayActive = false }
+        airplayObserver = nil
+        airplayPlayer = nil
         saveVodProgress()
         saveTimer?.invalidate()
         vod = nil
@@ -490,10 +520,15 @@ final class AppModel: ObservableObject {
         withAnimation(.easeOut(duration: 0.15)) { showVodBar = true }
         vodBarTimer?.invalidate()
         vodBarTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
-            guard let self = self, !self.mpv.paused else { return }
-            withAnimation(.easeIn(duration: 0.2)) { self.showVodBar = false }
+            guard let self = self, !self.mpv.paused, !self.scrubbing else { return }
+            withAnimation(.easeIn(duration: 0.2)) {
+                self.showVodBar = false
+                self.showTopButtons = false
+            }
         }
     }
+
+    var scrubbing = false
 
     func seek(_ seconds: Double) {
         mpv.seek(by: seconds)
@@ -893,10 +928,153 @@ final class AppModel: ObservableObject {
     func tapVideo() {
         if showPanel { showPanel = false; return }
         if showEPG { closeEPG(); return }
+        if mini { toggleMini(); return }
         if vod != nil {
-            if showVodBar { withAnimation { showVodBar = false } } else { flashVodBar() }
+            if showVodBar { withAnimation { showVodBar = false; showTopButtons = false } } else { showTopButtons = true; flashVodBar() }
             return
         }
-        if showInfo { showInfo = false } else { flashInfo() }
+        if showInfo { withAnimation { showInfo = false; showTopButtons = false } } else { flashInfo(withButtons: true) }
+    }
+
+    // MARK: - Trackpad (two fingers)
+
+    /// Two-finger swipe: → channel list, ← guide (from the right), ↑↓ change channel with a drag.
+    private func handleScroll(_ e: NSEvent) -> Bool {
+        guard e.hasPreciseScrollingDeltas, e.momentumPhase.isEmpty else { return false }
+        if browserOpen || showSetup || showAccount || filterKind != nil || mini { return false }
+        let inverted = e.isDirectionInvertedFromDevice
+        let fx = inverted ? e.scrollingDeltaX : -e.scrollingDeltaX   // + = fingers moving right
+        let fy = inverted ? e.scrollingDeltaY : -e.scrollingDeltaY   // + = fingers moving down
+        switch e.phase {
+        case .began:
+            gesture = (0, 0, 0)
+            return showPanel || showEPG ? false : true
+        case .changed:
+            gesture.dx += fx
+            gesture.dy += fy
+            if gesture.axis == 0, max(abs(gesture.dx), abs(gesture.dy)) > 14 {
+                gesture.axis = abs(gesture.dx) > abs(gesture.dy) ? 1 : 2
+            }
+            if gesture.axis == 2 {
+                if showPanel || showEPG { return false }      // let the lists scroll
+                if vod == nil && channels.count > 1 { dragTo(gesture.dy) }
+                return true
+            }
+            return gesture.axis == 1
+        case .ended, .cancelled:
+            let g = gesture
+            gesture = (0, 0, 0)
+            if g.axis == 1 && abs(g.dx) > 60 {
+                if vod != nil {
+                    seek(g.dx > 0 ? 30 : -30)
+                } else if showEPG {
+                    if g.dx > 0 { closeEPG() }
+                } else if showPanel {
+                    if g.dx < 0 { withAnimation(.easeIn(duration: 0.2)) { showPanel = false } }
+                } else {
+                    if g.dx > 0 { togglePanel() } else { openEPG() }
+                }
+                return true
+            }
+            if g.axis == 2 && vod == nil && !showPanel && !showEPG {
+                endDrag(g.dy)
+                return true
+            }
+            return false
+        default:
+            return false
+        }
+    }
+
+    private var screenHeight: CGFloat { NSApp.keyWindow?.contentView?.bounds.height ?? 700 }
+
+    private func dragTo(_ dy: CGFloat) {
+        let target = neighbor(dy < 0 ? 1 : -1)   // fingers up = next channel
+        dragTarget = target
+        showInfo = false
+        dragY = dy
+    }
+
+    private func endDrag(_ dy: CGFloat) {
+        let h = screenHeight
+        guard let target = dragTarget, abs(dy) > h * 0.2 else {
+            withAnimation(.easeOut(duration: 0.18)) { dragY = 0 }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in if self?.dragY == 0 { self?.dragTarget = nil } }
+            return
+        }
+        withAnimation(.easeOut(duration: 0.18)) { dragY = dy < 0 ? -h : h }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.19) { [weak self] in
+            guard let self = self else { return }
+            self.cardChannel = target
+            self.dragY = 0
+            self.dragTarget = nil
+            self.play(target)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                if self?.cardChannel == target { withAnimation { self?.cardChannel = nil } }
+            }
+        }
+    }
+
+    // MARK: - Mini window (picture in picture)
+
+    func toggleMini() {
+        guard let w = NSApp.windows.first(where: { $0.isVisible }) else { return }
+        if !mini {
+            if w.styleMask.contains(.fullScreen) { w.toggleFullScreen(nil) }
+            savedFrame = w.frame
+            showPanel = false
+            showEPG = false
+            showInfo = false
+            showVodBar = false
+            showTopButtons = false
+            mini = true
+            let screen = w.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+            let size = NSSize(width: 480, height: 270)
+            w.level = .floating
+            w.collectionBehavior.insert(.canJoinAllSpaces)
+            w.setFrame(NSRect(x: screen.maxX - size.width - 24, y: screen.minY + 24, width: size.width, height: size.height), display: true, animate: true)
+            w.minSize = NSSize(width: 320, height: 180)
+        } else {
+            mini = false
+            w.level = .normal
+            w.collectionBehavior.remove(.canJoinAllSpaces)
+            w.minSize = NSSize(width: 960, height: 560)
+            if let f = savedFrame { w.setFrame(f, display: true, animate: true) }
+        }
+    }
+
+    // MARK: - AirPlay (Apple TV)
+
+    /// Movies / series go to the Apple TV with AVPlayer; the live channels' format is not accepted by AirPlay.
+    func prepareAirPlay() {
+        airplayObserver = nil
+        airplayPlayer?.pause()
+        airplayPlayer = nil
+        guard let w = vod, let acc = xtream(), let url = URL(string: w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext)) else { return }
+        let p = AVPlayer(url: url)
+        p.allowsExternalPlayback = true
+        airplayObserver = p.observe(\.isExternalPlaybackActive, options: [.new]) { [weak self] player, _ in
+            DispatchQueue.main.async { self?.airplayChanged(player.isExternalPlaybackActive) }
+        }
+        airplayPlayer = p
+    }
+
+    private func airplayChanged(_ active: Bool) {
+        guard let p = airplayPlayer else { return }
+        if active, !airplayActive {
+            airplayActive = true
+            let pos = mpv.position
+            mpv.setPaused(true)
+            p.seek(to: CMTime(seconds: pos, preferredTimescale: 600))
+            p.play()
+            status = "Transmitiendo al Apple TV\nUsa el botón AirPlay para volver a este Mac."
+        } else if !active, airplayActive {
+            airplayActive = false
+            let pos = p.currentTime().seconds
+            p.pause()
+            status = nil
+            if pos.isFinite, pos > 1 { mpv.command(["seek", String(pos), "absolute"]) }
+            mpv.setPaused(false)
+        }
     }
 }

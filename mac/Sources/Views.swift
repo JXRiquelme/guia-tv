@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVKit
 
 // MARK: - Theme
 
@@ -53,12 +54,16 @@ struct RootView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                VideoView()
-                if app.shutter { Color.black }
+                VideoView().offset(y: app.dragY)
+                if app.shutter && app.dragTarget == nil { Color.black }
+                if let t = app.dragTarget {
+                    ZapCard(index: t).offset(y: app.dragY < 0 ? geo.size.height + app.dragY : -geo.size.height + app.dragY)
+                }
+                if let c = app.cardChannel { ZapCard(index: c).transition(.opacity) }
                 Color.clear.contentShape(Rectangle()).onTapGesture { app.tapVideo() }
 
-                if app.vod == nil && app.showInfo { InfoBanner().frame(maxHeight: .infinity, alignment: .bottom).transition(.opacity) }
-                if app.vod != nil && (app.showVodBar || mpv.paused) {
+                if app.vod == nil && app.showInfo && !app.mini { InfoBanner().frame(maxHeight: .infinity, alignment: .bottom).transition(.opacity) }
+                if app.vod != nil && (app.showVodBar || mpv.paused) && !app.mini {
                     VodBar().frame(maxHeight: .infinity, alignment: .bottom).transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 if let s = app.status {
@@ -73,14 +78,18 @@ struct RootView: View {
                         .padding(.horizontal, 18).padding(.vertical, 6).background(Color.black.opacity(0.8)).cornerRadius(10)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(30)
                 }
+                if app.showTopButtons && !app.mini {
+                    TopButtons().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).transition(.opacity)
+                }
                 if app.showPanel {
-                    SidePanel().frame(width: 430).frame(maxWidth: .infinity, alignment: .leading)
+                    SidePanel().frame(width: 400).frame(maxWidth: .infinity, alignment: .leading)
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 }
                 if app.showEPG {
-                    EPGView().frame(height: geo.size.height * 0.66).frame(maxHeight: .infinity, alignment: .bottom)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    EPGView().frame(width: geo.size.width * 0.72).frame(maxWidth: .infinity, alignment: .trailing)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
+                if app.airplayNotice { AirPlayNotice() }
                 if app.browserOpen { BrowserView().transition(.opacity) }
                 if app.filterKind != nil { FilterView() }
                 if app.showAccount { AccountView() }
@@ -90,6 +99,7 @@ struct RootView: View {
             .animation(.easeOut(duration: 0.22), value: app.showEPG)
             .animation(.easeOut(duration: 0.2), value: app.browserOpen)
             .animation(.easeOut(duration: 0.18), value: app.showInfo)
+            .animation(.easeOut(duration: 0.18), value: app.showTopButtons)
         }
         .background(Color.black)
         .preferredColorScheme(.dark)
@@ -140,9 +150,9 @@ struct TopTabs: View {
             ForEach([Tab.live, .movies, .series], id: \.rawValue) { t in
                 Button { app.tab(t) } label: {
                     Text(["Canales", "Películas", "Series"][t.rawValue])
-                        .font(.system(size: 17, weight: .bold))
+                        .font(.system(size: 15, weight: .bold))
                         .foregroundColor(t == active ? Theme.accent : .white)
-                        .frame(width: 112, height: 40)
+                        .frame(width: 96, height: 36)
                         .background(t == active ? Theme.blue.opacity(0.25) : Color.clear)
                         .cornerRadius(10)
                         .contentShape(Rectangle())
@@ -157,8 +167,8 @@ struct IconButton: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Image(systemName: system).font(.system(size: 17, weight: .semibold)).foregroundColor(.white)
-                .frame(width: 40, height: 40).background(Color.white.opacity(0.1)).clipShape(Circle())
+            Image(systemName: system).font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
+                .frame(width: 34, height: 34).background(Color.white.opacity(0.1)).clipShape(Circle())
         }.buttonStyle(.plain)
     }
 }
@@ -215,16 +225,16 @@ struct ChannelRow: View {
     var body: some View {
         let now = GuideParser.nowNext(app.programs(ch), at: app.now).0
         HStack(spacing: 12) {
-            Text(playing ? "▶" : "\(ch.number)").font(.system(size: 16)).foregroundColor(playing ? Theme.accent : Theme.hint)
-                .frame(width: 34, alignment: .trailing)
-            RemoteImage(url: ch.logo).frame(width: 64, height: 36)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(ch.name).font(.system(size: 17, weight: .bold)).foregroundColor(playing ? Theme.accent : .white).lineLimit(1)
-                if let p = now { Text(p.title).font(.system(size: 13)).foregroundColor(Theme.muted).lineLimit(1) }
+            Text(playing ? "▶" : "\(ch.number)").font(.system(size: 14)).foregroundColor(playing ? Theme.accent : Theme.hint)
+                .frame(width: 28, alignment: .trailing)
+            RemoteImage(url: ch.logo).frame(width: 52, height: 30)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(ch.name).font(.system(size: 15, weight: .bold)).foregroundColor(playing ? Theme.accent : .white).lineLimit(1)
+                if let p = now { Text(p.title).font(.system(size: 12)).foregroundColor(Theme.muted).lineLimit(1) }
             }
             Spacer()
         }
-        .padding(.vertical, 6).padding(.horizontal, 6)
+        .padding(.vertical, 4).padding(.horizontal, 4)
         .background(selected ? Theme.blue : Color.clear).cornerRadius(8)
         .contentShape(Rectangle())
     }
@@ -402,16 +412,15 @@ struct VodBar: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(w.title).font(.system(size: 24, weight: .bold)).lineLimit(1)
                 if !w.subtitle.isEmpty { Text(w.subtitle).font(.system(size: 16)).foregroundColor(Theme.muted).lineLimit(1) }
-                Slider(value: Binding(get: { scrub ?? mpv.position },
-                                      set: { scrub = $0 }),
-                       in: 0...max(1, mpv.duration)) { editing in
-                    if !editing, let v = scrub {
-                        mpv.command(["seek", String(v), "absolute"])
-                        scrub = nil
+                Scrubber(position: scrub ?? mpv.position, duration: mpv.duration) { value, done in
+                    scrub = value
+                    app.scrubbing = !done
+                    if done {
+                        mpv.command(["seek", String(value), "absolute"])
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { scrub = nil }
                     }
                     app.flashVodBar()
                 }
-                .tint(.yellow)
                 HStack(spacing: 8) {
                     Text((mpv.paused ? "Pausa   ·   " : "") + app.clock(scrub ?? mpv.position) + (mpv.duration > 0 ? " / " + app.clock(mpv.duration) : ""))
                         .font(.system(size: 16)).monospacedDigit()
@@ -805,5 +814,124 @@ struct AccountView: View {
         app.saveAccount(XtreamAccount(base: server.trimmingCharacters(in: .whitespaces),
                                       user: user.trimmingCharacters(in: .whitespaces),
                                       pass: pass.trimmingCharacters(in: .whitespaces)), then: app.pendingSeries)
+    }
+}
+
+
+// MARK: - Timeline, zapping card, top buttons
+
+/// Draggable timeline: click or drag anywhere on it; the seek happens when the mouse is released.
+struct Scrubber: View {
+    let position: Double
+    let duration: Double
+    let onChange: (_ value: Double, _ done: Bool) -> Void
+
+    var body: some View {
+        GeometryReader { g in
+            let frac = duration > 0 ? max(0, min(1, position / duration)) : 0
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.25)).frame(height: 6)
+                Capsule().fill(Color.yellow).frame(width: g.size.width * frac, height: 6)
+                Circle().fill(Color.white).frame(width: 16, height: 16)
+                    .offset(x: g.size.width * frac - 8)
+            }
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { v in
+                    guard duration > 0 else { return }
+                    onChange(max(0, min(1, v.location.x / g.size.width)) * duration, false)
+                }
+                .onEnded { v in
+                    guard duration > 0 else { return }
+                    onChange(max(0, min(1, v.location.x / g.size.width)) * duration, true)
+                })
+        }
+        .frame(height: 22)
+    }
+}
+
+/// Channel card shown while dragging to the next/previous channel and until it starts.
+struct ZapCard: View {
+    @EnvironmentObject var app: AppModel
+    let index: Int
+    var body: some View {
+        ZStack {
+            Color(red: 0.04, green: 0.07, blue: 0.19)
+            if app.channels.indices.contains(index) {
+                let ch = app.channels[index]
+                let now = GuideParser.nowNext(app.programs(ch), at: app.now).0
+                VStack(spacing: 10) {
+                    RemoteImage(url: ch.logo).frame(width: 220, height: 124)
+                    Text("\(ch.number)   \(ch.name)").font(.system(size: 30, weight: .bold)).foregroundColor(.white)
+                    if let p = now {
+                        Text("\(hm(p.start)) – \(hm(p.stop))   \(p.title)").font(.system(size: 18)).foregroundColor(Theme.muted)
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+struct AirPlayButton: NSViewRepresentable {
+    let player: AVPlayer?
+    func makeNSView(context: Context) -> AVRoutePickerView {
+        let v = AVRoutePickerView()
+        v.isRoutePickerButtonBordered = false
+        v.setRoutePickerButtonColor(.white, for: .normal)
+        v.setRoutePickerButtonColor(NSColor(Theme.accent), for: .active)
+        v.player = player
+        return v
+    }
+    func updateNSView(_ v: AVRoutePickerView, context: Context) { v.player = player }
+}
+
+struct TopButtons: View {
+    @EnvironmentObject var app: AppModel
+    var body: some View {
+        HStack {
+            if app.vod == nil {
+                Button { app.togglePanel() } label: {
+                    Label("Canales", systemImage: "line.3.horizontal").font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.white).padding(.horizontal, 16).padding(.vertical, 9)
+                        .background(Theme.bar).clipShape(Capsule())
+                }.buttonStyle(.plain)
+            }
+            Spacer()
+            Group {
+                if app.vod != nil, let p = app.airplayPlayer {
+                    AirPlayButton(player: p).frame(width: 26, height: 26)
+                } else {
+                    Button { app.airplayNotice = true } label: {
+                        Image(systemName: "airplayvideo").font(.system(size: 18, weight: .semibold)).foregroundColor(.white)
+                    }.buttonStyle(.plain)
+                }
+            }
+            .frame(width: 46, height: 46).background(Theme.bar).clipShape(Circle())
+            Button { app.toggleMini() } label: {
+                Image(systemName: "pip.enter").font(.system(size: 18, weight: .semibold)).foregroundColor(.white)
+                    .frame(width: 46, height: 46).background(Theme.bar).clipShape(Circle())
+            }.buttonStyle(.plain)
+        }
+        .padding(.horizontal, 32).padding(.top, 24)
+    }
+}
+
+struct AirPlayNotice: View {
+    @EnvironmentObject var app: AppModel
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.45).onTapGesture { app.airplayNotice = false }
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Ver en el Apple TV").font(.system(size: 20, weight: .bold))
+                Text("Las películas y series se envían al Apple TV con el botón AirPlay que aparece mientras se reproducen.\n\nLos canales en vivo usan un formato que AirPlay no acepta. Para verlos en el Apple TV, abre el Centro de control del Mac → Duplicar pantalla → Apple TV, y pon AerioTV Lite en pantalla completa.")
+                    .font(.system(size: 15)).foregroundColor(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                HStack { Spacer(); Button("Entendido") { app.airplayNotice = false }.keyboardShortcut(.defaultAction) }
+            }
+            .foregroundColor(.white)
+            .padding(24).frame(width: 480)
+            .background(Theme.panel).cornerRadius(16)
+        }
     }
 }
