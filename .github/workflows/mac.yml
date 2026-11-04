@@ -11,13 +11,14 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Instalar mpv
-        run: |
-          brew update >/dev/null || true
-          brew install mpv dylibbundler
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install mpv dylibbundler
       - name: Compilar
         run: bash mac/build.sh
       - uses: actions/upload-artifact@v4
@@ -29,6 +30,6 @@ jobs:
         with:
           tag_name: lite-mac
           name: AerioTV Lite para Mac
-          body: AerioTV Lite para Mac con chip Apple (macOS 14 o superior). Se actualiza con cada compilación.
+          body: AerioTV Lite para Mac con chip Apple (macOS 15 o superior). Se actualiza con cada compilación.
           files: mac/build/AerioTV-Lite-Mac.zip
           make_latest: false

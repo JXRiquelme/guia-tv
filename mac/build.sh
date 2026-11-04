@@ -6,7 +6,7 @@ PREFIX="$(brew --prefix)"
 rm -rf build && mkdir -p build
 
 swiftc -O -parse-as-library -swift-version 5 \
-  -target arm64-apple-macos14.0 \
+  -target arm64-apple-macos15.0 \
   -import-objc-header Sources/bridge.h \
   -I "$PREFIX/include" -L "$PREFIX/lib" -lmpv \
   -Xcc -DGL_SILENCE_DEPRECATION \
