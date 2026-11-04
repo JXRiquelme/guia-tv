@@ -36,6 +36,12 @@ final class AppModel: ObservableObject {
     @Published var panelQuery = ""
     @Published var panelSelection = 0
     @Published var showEPG = false
+    /// 0 = panel fully open; negative = pushed out to the left (follows the fingers).
+    @Published var panelOffset: CGFloat = 0
+    /// 0 = guide fully open; positive = pushed out to the right.
+    @Published var epgOffset: CGFloat = 0
+    static let panelWidth: CGFloat = 400
+    var epgWidth: CGFloat { (NSApp.windows.first { $0.isVisible }?.contentView?.bounds.width ?? 1280) * 0.72 }
     @Published var epgRow = 0
     @Published var epgCursor = Date()
     @Published var epgWindowStart = Date()
@@ -341,29 +347,67 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private let slide = Animation.spring(response: 0.32, dampingFraction: 0.9)
+
     func togglePanel() {
-        if showPanel { showPanel = false; return }
-        showEPG = false
-        showInfo = false
-        panelQuery = ""
-        panelSelection = visibleChannels.firstIndex(where: { $0.number == currentChannel?.number }) ?? 0
-        withAnimation(.easeOut(duration: 0.2)) { showPanel = true }
+        if showPanel { closePanel(); return }
+        openPanel()
     }
 
-    func openEPG() {
-        guard vod == nil, !channels.isEmpty else { return }
-        showPanel = false
+    /// Puts the panel on screen at [offset] (used to start a finger-driven opening).
+    private func preparePanel(offset: CGFloat) {
+        if showEPG { closeEPG() }
         showInfo = false
+        showTopButtons = false
+        panelQuery = ""
+        panelSelection = visibleChannels.firstIndex(where: { $0.number == currentChannel?.number }) ?? 0
+        panelOffset = offset
+        showPanel = true
+    }
+
+    func openPanel() {
+        if !showPanel { preparePanel(offset: -Self.panelWidth) }
+        withAnimation(slide) { panelOffset = 0 }
+    }
+
+    func closePanel() {
+        guard showPanel else { return }
+        withAnimation(slide) { panelOffset = -Self.panelWidth } completion: { [weak self] in
+            guard let self = self, self.panelOffset <= -Self.panelWidth + 1 else { return }
+            self.showPanel = false
+            self.panelOffset = 0
+        }
+    }
+
+    private func prepareEPG(offset: CGFloat) {
+        if showPanel { closePanel() }
+        showInfo = false
+        showTopButtons = false
         let rows = epgRows
         epgRow = rows.firstIndex(where: { $0.number == currentChannel?.number }) ?? 0
         epgCursor = Date()
         let half: TimeInterval = 1800
         epgWindowStart = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970 / half) * half - half)
         if guide.isEmpty { refreshGuide(force: false) }
-        withAnimation(.easeOut(duration: 0.22)) { showEPG = true }
+        epgOffset = offset
+        showEPG = true
     }
 
-    func closeEPG() { withAnimation(.easeIn(duration: 0.22)) { showEPG = false } }
+    func openEPG() {
+        guard vod == nil, !channels.isEmpty else { return }
+        if !showEPG { prepareEPG(offset: epgWidth) }
+        withAnimation(slide) { epgOffset = 0 }
+    }
+
+    func closeEPG() {
+        guard showEPG else { return }
+        let w = epgWidth
+        withAnimation(slide) { epgOffset = w } completion: { [weak self] in
+            guard let self = self, self.epgOffset >= w - 1 else { return }
+            self.showEPG = false
+            self.epgOffset = 0
+        }
+    }
 
     var epgRows: [Channel] {
         let r = channels.filter { !hiddenChannels.contains($0.name) }
@@ -402,7 +446,7 @@ final class AppModel: ObservableObject {
 
     func playChannel(_ ch: Channel) {
         guard let i = channels.firstIndex(where: { $0.number == ch.number }) else { return }
-        showPanel = false
+        closePanel()
         closeEPG()
         if i != current || vod != nil { play(i) } else { flashInfo() }
     }
@@ -868,7 +912,7 @@ final class AppModel: ObservableObject {
             case up: panelSelection = max(0, panelSelection - 1)
             case down: panelSelection = min(list.count - 1, panelSelection + 1)
             case enter: if list.indices.contains(panelSelection) { playChannel(list[panelSelection]) }
-            case left: showPanel = false
+            case left: closePanel()
             default: return false
             }
             return true
@@ -918,7 +962,7 @@ final class AppModel: ObservableObject {
         else if showAccount { showAccount = false; if !browserOpen && vod == nil { play(current) } }
         else if showSetup, !channels.isEmpty { showSetup = false; play(current) }
         else if showEPG { closeEPG() }
-        else if showPanel { showPanel = false }
+        else if showPanel { closePanel() }
         else if browserOpen { browserBack() }
         else if vod != nil { leaveVod() }
         else if showInfo { showInfo = false }
@@ -926,7 +970,7 @@ final class AppModel: ObservableObject {
 
     /// Click on the video.
     func tapVideo() {
-        if showPanel { showPanel = false; return }
+        if showPanel { closePanel(); return }
         if showEPG { closeEPG(); return }
         if mini { toggleMini(); return }
         if vod != nil {
@@ -938,9 +982,14 @@ final class AppModel: ObservableObject {
 
     // MARK: - Trackpad (two fingers)
 
-    /// Two-finger swipe: → channel list, ← guide (from the right), ↑↓ change channel with a drag.
+    private enum SwipeMode { case none, openPanel, closePanel, openEPG, closeEPG, seek, zap, pass }
+    private var swipeMode = SwipeMode.none
+
+    /// Two-finger swipe: → channel list, ← guide (from the right), ↑↓ change channel.
+    /// Panels follow the fingers and settle (open or closed) when the fingers lift.
     private func handleScroll(_ e: NSEvent) -> Bool {
-        guard e.hasPreciseScrollingDeltas, e.momentumPhase.isEmpty else { return false }
+        guard e.hasPreciseScrollingDeltas else { return false }
+        if !e.momentumPhase.isEmpty { return swipeMode != .pass && swipeMode != .none }
         if browserOpen || showSetup || showAccount || filterKind != nil || mini { return false }
         let inverted = e.isDirectionInvertedFromDevice
         let fx = inverted ? e.scrollingDeltaX : -e.scrollingDeltaX   // + = fingers moving right
@@ -948,39 +997,56 @@ final class AppModel: ObservableObject {
         switch e.phase {
         case .began:
             gesture = (0, 0, 0)
-            return showPanel || showEPG ? false : true
+            swipeMode = .none
+            return !(showPanel || showEPG)
         case .changed:
             gesture.dx += fx
             gesture.dy += fy
-            if gesture.axis == 0, max(abs(gesture.dx), abs(gesture.dy)) > 14 {
-                gesture.axis = abs(gesture.dx) > abs(gesture.dy) ? 1 : 2
+            if swipeMode == .none, max(abs(gesture.dx), abs(gesture.dy)) > 10 {
+                let horizontal = abs(gesture.dx) > abs(gesture.dy)
+                if horizontal {
+                    if vod != nil { swipeMode = .seek }
+                    else if showEPG { swipeMode = gesture.dx > 0 ? .closeEPG : .pass }
+                    else if showPanel { swipeMode = gesture.dx < 0 ? .closePanel : .pass }
+                    else if gesture.dx > 0 { swipeMode = .openPanel; preparePanel(offset: -Self.panelWidth) }
+                    else { swipeMode = .openEPG; prepareEPG(offset: epgWidth) }
+                } else {
+                    swipeMode = (vod == nil && !showPanel && !showEPG && channels.count > 1) ? .zap : .pass
+                }
             }
-            if gesture.axis == 2 {
-                if showPanel || showEPG { return false }      // let the lists scroll
-                if vod == nil && channels.count > 1 { dragTo(gesture.dy) }
-                return true
+            switch swipeMode {
+            case .openPanel: panelOffset = min(0, -Self.panelWidth + max(0, gesture.dx))
+            case .closePanel: panelOffset = max(-Self.panelWidth, min(0, gesture.dx))
+            case .openEPG: epgOffset = max(0, epgWidth + min(0, gesture.dx))
+            case .closeEPG: epgOffset = min(epgWidth, max(0, gesture.dx))
+            case .zap: dragTo(gesture.dy)
+            case .pass, .none: return false
+            case .seek: break
             }
-            return gesture.axis == 1
+            return true
         case .ended, .cancelled:
             let g = gesture
+            let mode = swipeMode
+            let flick = abs(fx) > 6   // last movement still fast = a flick
             gesture = (0, 0, 0)
-            if g.axis == 1 && abs(g.dx) > 60 {
-                if vod != nil {
-                    seek(g.dx > 0 ? 30 : -30)
-                } else if showEPG {
-                    if g.dx > 0 { closeEPG() }
-                } else if showPanel {
-                    if g.dx < 0 { withAnimation(.easeIn(duration: 0.2)) { showPanel = false } }
-                } else {
-                    if g.dx > 0 { togglePanel() } else { openEPG() }
-                }
-                return true
-            }
-            if g.axis == 2 && vod == nil && !showPanel && !showEPG {
+            swipeMode = .none
+            switch mode {
+            case .openPanel:
+                if g.dx > Self.panelWidth * 0.3 || (flick && fx > 0) { openPanel() } else { closePanel() }
+            case .closePanel:
+                if -g.dx > Self.panelWidth * 0.3 || (flick && fx < 0) { closePanel() } else { openPanel() }
+            case .openEPG:
+                if -g.dx > epgWidth * 0.25 || (flick && fx < 0) { openEPG() } else { closeEPG() }
+            case .closeEPG:
+                if g.dx > epgWidth * 0.25 || (flick && fx > 0) { closeEPG() } else { openEPG() }
+            case .seek:
+                if abs(g.dx) > 60 { seek(g.dx > 0 ? 30 : -30) }
+            case .zap:
                 endDrag(g.dy)
-                return true
+            case .pass, .none:
+                return false
             }
-            return false
+            return true
         default:
             return false
         }
@@ -998,12 +1064,12 @@ final class AppModel: ObservableObject {
     private func endDrag(_ dy: CGFloat) {
         let h = screenHeight
         guard let target = dragTarget, abs(dy) > h * 0.2 else {
-            withAnimation(.easeOut(duration: 0.18)) { dragY = 0 }
+            withAnimation(slide) { dragY = 0 }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in if self?.dragY == 0 { self?.dragTarget = nil } }
             return
         }
-        withAnimation(.easeOut(duration: 0.18)) { dragY = dy < 0 ? -h : h }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.19) { [weak self] in
+        withAnimation(.easeOut(duration: 0.22)) { dragY = dy < 0 ? -h : h }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.23) { [weak self] in
             guard let self = self else { return }
             self.cardChannel = target
             self.dragY = 0
@@ -1015,7 +1081,20 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: - Mini window (picture in picture)
+    // MARK: - Picture in picture
+
+    func togglePiP() {
+        guard let w = NSApp.windows.first(where: { $0.isVisible }) ?? NSApp.windows.first else { return }
+        let pip = PiPController.shared
+        guard pip.supported else { toggleMini(); return }
+        showTopButtons = false
+        showInfo = false
+        showVodBar = false
+        pip.isLive = vod == nil
+        pip.toggle(window: w)
+    }
+
+    // MARK: - Mini window (fallback when the system has no picture in picture)
 
     func toggleMini() {
         guard let w = NSApp.windows.first(where: { $0.isVisible }) else { return }

@@ -182,8 +182,13 @@ private let glProcAddress: @convention(c) (UnsafeMutableRawPointer?, UnsafePoint
 }
 
 final class VideoLayer: CAOpenGLLayer {
+    /// The layer on screen (there is only one).
+    static weak var current: VideoLayer?
     private var renderContext: OpaquePointer?
+    private var glContext: CGLContextObj?
     private var firstFrameReported = false
+    /// While picture-in-picture renders the video elsewhere, this layer stays black.
+    private(set) var suspended = false
 
     override init() {
         super.init()
@@ -214,8 +219,10 @@ final class VideoLayer: CAOpenGLLayer {
 
     override func copyCGLContext(forPixelFormat pf: CGLPixelFormatObj) -> CGLContextObj {
         let ctx = super.copyCGLContext(forPixelFormat: pf)
+        glContext = ctx
+        VideoLayer.current = self
         CGLSetCurrentContext(ctx)
-        createRenderContext()
+        if !suspended { createRenderContext() }
         return ctx
     }
 
@@ -276,6 +283,26 @@ final class VideoLayer: CAOpenGLLayer {
             firstFrameReported = true
             DispatchQueue.main.async { MPV.shared.onFirstFrame?() }
         }
+    }
+
+    /// libmpv allows one renderer at a time: picture-in-picture takes it over.
+    func releaseRenderer() {
+        suspended = true
+        guard let rc = renderContext else { return }
+        if let ctx = glContext { CGLSetCurrentContext(ctx) }
+        mpv_render_context_set_update_callback(rc, nil, nil)
+        mpv_render_context_free(rc)
+        renderContext = nil
+        setNeedsDisplay()
+    }
+
+    func restoreRenderer() {
+        suspended = false
+        if let ctx = glContext {
+            CGLSetCurrentContext(ctx)
+            createRenderContext()
+        }
+        setNeedsDisplay()
     }
 
     /// Called when a new file starts so the next first frame is reported again.

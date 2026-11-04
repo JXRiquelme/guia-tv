@@ -30,6 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.appearance = NSAppearance(named: .darkAqua)
         if let w = NSApp.windows.first {
             w.backgroundColor = .black
+            w.titlebarAppearsTransparent = true
+            w.styleMask.insert(.fullSizeContentView)
             w.setContentSize(NSSize(width: 1280, height: 720))
             w.center()
         }

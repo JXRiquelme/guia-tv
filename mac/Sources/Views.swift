@@ -54,10 +54,16 @@ struct RootView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                VideoView().offset(y: app.dragY)
+                let progress = min(1, abs(app.dragY) / max(1, geo.size.height))
+                VideoView()
+                    .scaleEffect(1 - progress * 0.08)
+                    .opacity(1 - progress * 0.6)
+                    .offset(y: app.dragY * 0.35)
                 if app.shutter && app.dragTarget == nil { Color.black }
                 if let t = app.dragTarget {
-                    ZapCard(index: t).offset(y: app.dragY < 0 ? geo.size.height + app.dragY : -geo.size.height + app.dragY)
+                    ZapCard(index: t)
+                        .shadow(color: .black.opacity(0.6), radius: 24, y: app.dragY < 0 ? -8 : 8)
+                        .offset(y: app.dragY < 0 ? geo.size.height + app.dragY : -geo.size.height + app.dragY)
                 }
                 if let c = app.cardChannel { ZapCard(index: c).transition(.opacity) }
                 Color.clear.contentShape(Rectangle()).onTapGesture { app.tapVideo() }
@@ -82,12 +88,16 @@ struct RootView: View {
                     TopButtons().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).transition(.opacity)
                 }
                 if app.showPanel {
-                    SidePanel().frame(width: 400).frame(maxWidth: .infinity, alignment: .leading)
-                        .transition(.move(edge: .leading).combined(with: .opacity))
+                    SidePanel().frame(width: AppModel.panelWidth)
+                        .shadow(color: .black.opacity(0.5), radius: 18)
+                        .offset(x: app.panelOffset)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if app.showEPG {
-                    EPGView().frame(width: geo.size.width * 0.72).frame(maxWidth: .infinity, alignment: .trailing)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                    EPGView().frame(width: geo.size.width * 0.72)
+                        .shadow(color: .black.opacity(0.5), radius: 18)
+                        .offset(x: app.epgOffset)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 if app.airplayNotice { AirPlayNotice() }
                 if app.browserOpen { BrowserView().transition(.opacity) }
@@ -95,13 +105,13 @@ struct RootView: View {
                 if app.showAccount { AccountView() }
                 if app.showSetup { SetupView() }
             }
-            .animation(.easeOut(duration: 0.2), value: app.showPanel)
-            .animation(.easeOut(duration: 0.22), value: app.showEPG)
             .animation(.easeOut(duration: 0.2), value: app.browserOpen)
             .animation(.easeOut(duration: 0.18), value: app.showInfo)
             .animation(.easeOut(duration: 0.18), value: app.showTopButtons)
         }
+        .clipped()
         .background(Color.black)
+        .ignoresSafeArea()
         .preferredColorScheme(.dark)
     }
 }
@@ -211,9 +221,9 @@ struct SidePanel: View {
             Text("↑↓ elegir · Enter ver · Esc cerrar · ↑↓ en pantalla cambia canal · → guía")
                 .font(.system(size: 12)).foregroundColor(Theme.hint)
         }
-        .padding(14)
+        .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 40)
         .frame(maxHeight: .infinity)
-        .background(Theme.panel.opacity(0.96))
+        .background(Theme.panel.opacity(0.97))
     }
 }
 
@@ -265,7 +275,6 @@ struct EPGView: View {
     var body: some View {
         let rows = app.epgRows
         VStack(alignment: .leading, spacing: 8) {
-            Capsule().fill(Color.white.opacity(0.4)).frame(width: 44, height: 5).frame(maxWidth: .infinity)
             HStack(alignment: .top) {
                 details(rows)
                 Spacer()
@@ -296,8 +305,8 @@ struct EPGView: View {
                 .overlay(nowLine(pps: pps, height: geo.size.height), alignment: .topLeading)
             }
         }
-        .padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 8)
-        .background(Theme.deep.opacity(0.96))
+        .padding(.horizontal, 20).padding(.top, 34).padding(.bottom, 8)
+        .background(Theme.deep.opacity(0.97))
     }
 
     private func smallButton(_ t: String, _ a: @escaping () -> Void) -> some View {
@@ -507,7 +516,7 @@ struct BrowserView: View {
                 }
             }
         }
-        .padding(.horizontal, 26).padding(.top, 16)
+        .padding(.horizontal, 26).padding(.top, 38)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Theme.deep)
         .animation(.easeOut(duration: 0.2), value: app.openSeries?.id)
@@ -857,7 +866,8 @@ struct ZapCard: View {
     let index: Int
     var body: some View {
         ZStack {
-            Color(red: 0.04, green: 0.07, blue: 0.19)
+            LinearGradient(colors: [Color(red: 0.06, green: 0.1, blue: 0.27), Color(red: 0.02, green: 0.04, blue: 0.12)],
+                           startPoint: .top, endPoint: .bottom)
             if app.channels.indices.contains(index) {
                 let ch = app.channels[index]
                 let now = GuideParser.nowNext(app.programs(ch), at: app.now).0
@@ -909,12 +919,12 @@ struct TopButtons: View {
                 }
             }
             .frame(width: 46, height: 46).background(Theme.bar).clipShape(Circle())
-            Button { app.toggleMini() } label: {
+            Button { app.togglePiP() } label: {
                 Image(systemName: "pip.enter").font(.system(size: 18, weight: .semibold)).foregroundColor(.white)
                     .frame(width: 46, height: 46).background(Theme.bar).clipShape(Circle())
             }.buttonStyle(.plain)
         }
-        .padding(.horizontal, 32).padding(.top, 24)
+        .padding(.horizontal, 32).padding(.top, 40)
     }
 }
 
