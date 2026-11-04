@@ -8,7 +8,16 @@ struct Channel: Identifiable, Hashable {
     let tvgId: String
     let logo: String
     let url: String
+    /// Other streams of the same channel (from #EXTALT lines or "(Op. N)" entries).
+    var alts: [Alt] = []
     var id: Int { number }
+    /// Main stream first, then the alternatives.
+    var options: [Alt] { [Alt(label: "Opción 1", url: url)] + alts }
+}
+
+struct Alt: Hashable {
+    let label: String
+    let url: String
 }
 
 struct Program: Hashable {
@@ -27,12 +36,24 @@ enum Search {
 enum Playlist {
     static func parse(_ text: String) -> [Channel] {
         var out: [Channel] = []
+        var alts: [[Alt]] = []
+        var target: Int? = nil
         var pending: String?
         let attrRegex = try! NSRegularExpression(pattern: "([\\w-]+)=\"([^\"]*)\"")
+        let opRegex = try! NSRegularExpression(pattern: "\\s*\\((?:Op\\.?|Opci[oó]n)\\s*(\\d+)\\)\\s*$", options: .caseInsensitive)
         for raw in text.components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
-            if line.uppercased().hasPrefix("#EXTINF") {
+            if line.uppercased().hasPrefix("#EXTALT:") {
+                // #EXTALT:Opción 2 (FHD)|http://… belongs to the channel above
+                let body = String(line.dropFirst(8))
+                if let t = target, let bar = body.lastIndex(of: "|") {
+                    let u = body[body.index(after: bar)...].trimmingCharacters(in: .whitespaces)
+                    if u.lowercased().hasPrefix("http") {
+                        alts[t].append(Alt(label: body[..<bar].trimmingCharacters(in: .whitespaces), url: u))
+                    }
+                }
+            } else if line.uppercased().hasPrefix("#EXTINF") {
                 pending = line
             } else if !line.hasPrefix("#"), let info = pending {
                 pending = nil
@@ -44,9 +65,31 @@ enum Playlist {
                 }
                 var name = displayName(info)
                 if name.isEmpty { name = attrs["tvg-name"] ?? "Canal \(out.count + 1)" }
+                // "DAZN LaLiga 1 (Op. 2)" is not listed: it becomes an option of "DAZN LaLiga 1"
+                let nn = name as NSString
+                if let m = opRegex.firstMatch(in: name, range: NSRange(location: 0, length: nn.length)) {
+                    let base = nn.substring(to: m.range.location).trimmingCharacters(in: .whitespaces)
+                    if let owner = out.firstIndex(where: { $0.name.caseInsensitiveCompare(base) == .orderedSame }) {
+                        alts[owner].append(Alt(label: "Opción \(nn.substring(with: m.range(at: 1)))", url: line))
+                        target = nil
+                        continue
+                    }
+                }
                 out.append(Channel(number: out.count + 1, name: name, tvgId: attrs["tvg-id"] ?? "",
                                    logo: attrs["tvg-logo"] ?? "", url: line))
+                alts.append([])
+                target = out.count - 1
             }
+        }
+        for i in out.indices where !alts[i].isEmpty {
+            var seen: Set<String> = [out[i].url]
+            var list: [Alt] = []
+            for a in alts[i] where !seen.contains(a.url) {
+                seen.insert(a.url)
+                let tag = ["(FHD)", "(HD)", "(SD)", "(4K)"].first { a.label.uppercased().contains($0) }
+                list.append(Alt(label: "Opción \(list.count + 2)" + (tag.map { " \($0)" } ?? ""), url: a.url))
+            }
+            out[i].alts = list
         }
         return out
     }

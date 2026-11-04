@@ -24,7 +24,16 @@ struct AerioLiteApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// The window is hidden while picture in picture plays: that must not quit the app.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        !PiPController.shared.busy
+    }
+
+    /// Clicking the Dock icon during picture in picture brings the video back to the window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if PiPController.shared.busy { PiPController.shared.stop(); return false }
+        return true
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)

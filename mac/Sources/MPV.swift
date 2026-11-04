@@ -136,6 +136,19 @@ final class MPV: ObservableObject {
     func selectAudio(_ id: Int) { setProperty("aid", String(id)) }
     func selectSubtitle(_ id: Int?) { setProperty("sid", id.map(String.init) ?? "no") }
 
+    /// General language settings, applied before each file (also drops the previous manual choice).
+    func applyLanguages(audio: String, subtitles: String) {
+        let langs = ["es": "es,spa,lat,es-419", "en": "en,eng"]
+        setProperty("alang", langs[audio] ?? "")
+        setProperty("aid", "auto")
+        if subtitles == "off" {
+            setProperty("sid", "no")
+        } else {
+            setProperty("slang", langs[subtitles] ?? "")
+            setProperty("sid", "auto")
+        }
+    }
+
     // MARK: events
 
     private func drainEvents() {

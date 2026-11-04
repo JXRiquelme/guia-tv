@@ -4,16 +4,44 @@ import AVKit
 
 // MARK: - Theme
 
+/// Neutral colours: the surfaces themselves are glass (see `glass`).
 enum Theme {
-    static let panel = Color(red: 0.04, green: 0.07, blue: 0.22)
-    static let deep = Color(red: 0.03, green: 0.06, blue: 0.19)
-    static let card = Color(red: 0.08, green: 0.12, blue: 0.27)
-    static let bar = Color(red: 0.04, green: 0.12, blue: 0.35).opacity(0.92)
-    static let blue = Color(red: 0.18, green: 0.44, blue: 0.92)
-    static let chip = Color(red: 0.23, green: 0.36, blue: 0.66)
-    static let accent = Color(red: 0.5, green: 0.83, blue: 1.0)
-    static let muted = Color(red: 0.72, green: 0.78, blue: 0.94)
-    static let hint = Color(red: 0.56, green: 0.63, blue: 0.8)
+    static let panel = Color(white: 0.11)
+    static let deep = Color(white: 0.07)
+    static let card = Color(white: 0.16)
+    static let bar = Color.black.opacity(0.55)
+    static let blue = Color.white.opacity(0.2)       // selection
+    static let chip = Color.white.opacity(0.24)
+    static let accent = Color(red: 1.0, green: 0.84, blue: 0.4)
+    static let muted = Color(white: 0.78)
+    static let hint = Color(white: 0.6)
+}
+
+// MARK: - Liquid glass (macOS 26), frosted material before that
+
+#if compiler(>=6.2)
+extension View {
+    @ViewBuilder
+    func glass<S: Shape>(_ shape: S, dark: Double = 0.2) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular.tint(Color.black.opacity(dark)), in: shape)
+        } else {
+            self.background(Color.black.opacity(dark)).background(.ultraThinMaterial).clipShape(shape)
+        }
+    }
+}
+#else
+extension View {
+    func glass<S: Shape>(_ shape: S, dark: Double = 0.2) -> some View {
+        self.background(Color.black.opacity(dark)).background(.ultraThinMaterial).clipShape(shape)
+    }
+}
+#endif
+
+extension View {
+    func glass(_ radius: CGFloat, dark: Double = 0.2) -> some View {
+        glass(RoundedRectangle(cornerRadius: radius, style: .continuous), dark: dark)
+    }
 }
 
 let hmFormatter: DateFormatter = {
@@ -56,9 +84,7 @@ struct RootView: View {
             ZStack {
                 let progress: Double = Double(min(1, abs(app.dragY) / max(1, geo.size.height)))
                 VideoView()
-                    .scaleEffect(CGFloat(1.0 - progress * 0.08))
-                    .opacity(1.0 - progress * 0.6)
-                    .offset(y: app.dragY * 0.35)
+                Color.black.opacity(progress * 0.7).allowsHitTesting(false)
                 if app.shutter && app.dragTarget == nil { Color.black }
                 if let t = app.dragTarget {
                     ZapCard(index: t)
@@ -103,6 +129,7 @@ struct RootView: View {
                 if app.browserOpen { BrowserView().transition(.opacity) }
                 if app.filterKind != nil { FilterView() }
                 if app.showAccount { AccountView() }
+                if app.showSettings { SettingsView() }
                 if app.showSetup { SetupView() }
             }
             .animation(.easeOut(duration: 0.2), value: app.browserOpen)
@@ -141,12 +168,35 @@ struct InfoBanner: View {
                     }
                 }
                 Spacer()
+                if !ch.alts.isEmpty { OptionsMenu(ch: ch) }
             }
             .foregroundColor(.white)
             .padding(.horizontal, 22).padding(.vertical, 14)
-            .background(Theme.bar).cornerRadius(14)
+            .glass(20)
             .padding(.horizontal, 40).padding(.bottom, 28)
         }
+    }
+}
+
+/// ⇄ button on the card: other streams of the same channel.
+struct OptionsMenu: View {
+    @EnvironmentObject var app: AppModel
+    let ch: Channel
+    var body: some View {
+        let sel = app.altIndex(ch)
+        let _ = app.altVersion
+        Menu {
+            ForEach(Array(ch.options.enumerated()), id: \.offset) { i, o in
+                Button((i == sel ? "● " : "○ ") + o.label) { app.chooseOption(i) }
+            }
+        } label: {
+            Label(ch.options[sel].label, systemImage: "arrow.left.arrow.right")
+                .font(.system(size: 15, weight: .bold)).foregroundColor(.white)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .glass(Capsule(), dark: 0.1)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("Otras opciones de este canal (tecla O)")
     }
 }
 
@@ -161,10 +211,10 @@ struct TopTabs: View {
                 Button { app.tab(t) } label: {
                     Text(["Canales", "Películas", "Series"][t.rawValue])
                         .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(t == active ? Theme.accent : .white)
+                        .foregroundColor(t == active ? .white : Theme.muted)
                         .frame(width: 96, height: 36)
-                        .background(t == active ? Theme.blue.opacity(0.25) : Color.clear)
-                        .cornerRadius(10)
+                        .background(t == active ? Color.white.opacity(0.18) : Color.clear)
+                        .clipShape(Capsule())
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain)
             }
@@ -178,7 +228,7 @@ struct IconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: system).font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
-                .frame(width: 34, height: 34).background(Color.white.opacity(0.1)).clipShape(Circle())
+                .frame(width: 34, height: 34).background(Color.white.opacity(0.12)).clipShape(Circle())
         }.buttonStyle(.plain)
     }
 }
@@ -196,6 +246,7 @@ struct SidePanel: View {
                 Spacer()
                 IconButton(system: "magnifyingglass") { searching.toggle(); if !searching { app.panelQuery = "" } }
                 IconButton(system: "line.3.horizontal.decrease") { app.filterKind = .live }
+                IconButton(system: "gearshape") { app.showSettings = true }
             }
             if searching {
                 TextField("Buscar canal", text: $app.panelQuery).textFieldStyle(.roundedBorder).font(.system(size: 16))
@@ -211,6 +262,7 @@ struct SidePanel: View {
                                 .onTapGesture { app.playChannel(ch) }
                                 .contextMenu { Button("Ocultar canal") { app.toggleHidden(channel: ch.name) } }
                         }
+                        SettingsRow(title: "Configuración: idioma y subtítulos") { app.showSettings = true }
                         SettingsRow(title: "Cuenta de películas y series") { app.pendingSeries = false; app.showAccount = true }
                         SettingsRow(title: "Cambiar dirección de la lista") { app.openSetup(nil) }
                     }
@@ -221,9 +273,10 @@ struct SidePanel: View {
             Text("↑↓ elegir · Enter ver · Esc cerrar · ↑↓ en pantalla cambia canal · → guía")
                 .font(.system(size: 12)).foregroundColor(Theme.hint)
         }
-        .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 40)
+        .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 34)
         .frame(maxHeight: .infinity)
-        .background(Theme.panel.opacity(0.97))
+        .glass(24, dark: 0.45)
+        .padding(.vertical, 8).padding(.leading, 8)
     }
 }
 
@@ -305,14 +358,15 @@ struct EPGView: View {
                 .overlay(nowLine(pps: pps, height: geo.size.height), alignment: .topLeading)
             }
         }
-        .padding(.horizontal, 20).padding(.top, 34).padding(.bottom, 8)
-        .background(Theme.deep.opacity(0.97))
+        .padding(.horizontal, 20).padding(.top, 30).padding(.bottom, 10)
+        .glass(24, dark: 0.5)
+        .padding(.vertical, 8).padding(.trailing, 8)
     }
 
     private func smallButton(_ t: String, _ a: @escaping () -> Void) -> some View {
         Button(action: a) {
             Text(t).font(.system(size: 14, weight: .bold)).foregroundColor(.white)
-                .padding(.horizontal, 14).padding(.vertical, 7).background(Color.white.opacity(0.14)).cornerRadius(16)
+                .padding(.horizontal, 14).padding(.vertical, 7).background(Color.white.opacity(0.14)).clipShape(Capsule())
         }.buttonStyle(.plain)
     }
 
@@ -363,7 +417,8 @@ struct EPGView: View {
                 Spacer(minLength: 0)
             }
             .frame(width: chanW - 2, height: rowH)
-            .background(selectedRow ? Color(red: 0.14, green: 0.23, blue: 0.5) : Color(red: 0.05, green: 0.09, blue: 0.26))
+            .background(selectedRow ? Color.white.opacity(0.18) : Color.white.opacity(0.05))
+            .cornerRadius(6)
             .contentShape(Rectangle())
             .onTapGesture { app.playChannel(ch) }
 
@@ -403,7 +458,7 @@ struct EPGView: View {
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(selected ? Theme.blue : (airing ? Color(red: 0.12, green: 0.17, blue: 0.37) : Color(red: 0.09, green: 0.13, blue: 0.29)))
+        .background(selected ? Color.white.opacity(0.3) : (airing ? Color.white.opacity(0.13) : Color.white.opacity(0.07)))
         .cornerRadius(6)
         .contentShape(Rectangle())
     }
@@ -456,14 +511,14 @@ struct VodBar: View {
             }
             .foregroundColor(.white)
             .padding(.horizontal, 22).padding(.vertical, 14)
-            .background(Theme.bar).cornerRadius(14)
+            .glass(20)
             .padding(.horizontal, 40).padding(.bottom, 28)
         }
     }
 
     private func pillLabel(_ t: String) -> some View {
         Text(t).font(.system(size: 15, weight: .bold)).foregroundColor(.white)
-            .padding(.horizontal, 14).padding(.vertical, 8).background(Color.white.opacity(0.13)).cornerRadius(18)
+            .padding(.horizontal, 14).padding(.vertical, 8).background(Color.white.opacity(0.13)).clipShape(Capsule())
     }
 
     private func pill(_ t: String, _ a: @escaping () -> Void) -> some View {
@@ -482,6 +537,7 @@ struct BrowserView: View {
             HStack {
                 TopTabs(active: app.browserSeries ? .series : .movies)
                 Spacer()
+                IconButton(system: "gearshape") { app.showSettings = true }
                 if app.openSeries != nil || app.gridMode != .category {
                     Button { app.browserBack() } label: {
                         Label("Volver", systemImage: "chevron.left").font(.system(size: 15, weight: .bold))
@@ -740,7 +796,7 @@ struct FilterView: View {
             }
             .foregroundColor(.white)
             .padding(22).frame(width: 520, height: 560)
-            .background(Theme.panel).cornerRadius(16)
+            .glass(24, dark: 0.45)
         }
     }
 
@@ -779,7 +835,7 @@ struct SetupView: View {
                 Button("Guardar y conectar") { app.saveSetup() }.keyboardShortcut(.defaultAction)
             }
             .foregroundColor(.white)
-            .padding(32).background(Theme.panel).cornerRadius(16)
+            .padding(32).glass(24, dark: 0.45)
         }
     }
 }
@@ -812,7 +868,7 @@ struct AccountView: View {
             .font(.system(size: 17))
             .foregroundColor(.white)
             .frame(width: 520)
-            .padding(30).background(Theme.panel).cornerRadius(16)
+            .padding(30).glass(24, dark: 0.45)
         }
         .onAppear {
             if let a = Store.load("xtream", XtreamAccount.self) { server = a.base; user = a.user; pass = a.pass }
@@ -866,7 +922,7 @@ struct ZapCard: View {
     let index: Int
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(red: 0.06, green: 0.1, blue: 0.27), Color(red: 0.02, green: 0.04, blue: 0.12)],
+            LinearGradient(colors: [Color(white: 0.13), Color(white: 0.03)],
                            startPoint: .top, endPoint: .bottom)
             if app.channels.indices.contains(index) {
                 let ch = app.channels[index]
@@ -903,10 +959,10 @@ struct TopButtons: View {
         HStack {
             if app.vod == nil {
                 Button { app.togglePanel() } label: {
-                    Label("Canales", systemImage: "line.3.horizontal").font(.system(size: 16, weight: .bold))
-                        .foregroundColor(.white).padding(.horizontal, 16).padding(.vertical, 9)
-                        .background(Theme.bar).clipShape(Capsule())
-                }.buttonStyle(.plain)
+                    Image(systemName: "line.3.horizontal").font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.white).frame(width: 46, height: 46)
+                        .glass(Circle())
+                }.buttonStyle(.plain).help("Canales, películas y series")
             }
             Spacer()
             Group {
@@ -918,10 +974,10 @@ struct TopButtons: View {
                     }.buttonStyle(.plain)
                 }
             }
-            .frame(width: 46, height: 46).background(Theme.bar).clipShape(Circle())
+            .frame(width: 46, height: 46).glass(Circle())
             Button { app.togglePiP() } label: {
                 Image(systemName: "pip.enter").font(.system(size: 18, weight: .semibold)).foregroundColor(.white)
-                    .frame(width: 46, height: 46).background(Theme.bar).clipShape(Circle())
+                    .frame(width: 46, height: 46).glass(Circle())
             }.buttonStyle(.plain)
         }
         .padding(.horizontal, 32).padding(.top, 40)
@@ -941,7 +997,47 @@ struct AirPlayNotice: View {
             }
             .foregroundColor(.white)
             .padding(24).frame(width: 480)
-            .background(Theme.panel).cornerRadius(16)
+            .glass(24, dark: 0.45)
+        }
+    }
+}
+
+
+// MARK: - Settings
+
+struct SettingsView: View {
+    @EnvironmentObject var app: AppModel
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).onTapGesture { app.showSettings = false }
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Configuración").font(.system(size: 22, weight: .bold))
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Idioma del audio").font(.system(size: 15, weight: .semibold))
+                    Picker("", selection: $app.audioLang) {
+                        Text("Español").tag("es")
+                        Text("Inglés").tag("en")
+                        Text("Original").tag("")
+                    }.pickerStyle(.segmented).labelsHidden()
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Subtítulos").font(.system(size: 15, weight: .semibold))
+                    Picker("", selection: $app.subLang) {
+                        Text("Desactivados").tag("off")
+                        Text("Español").tag("es")
+                        Text("Inglés").tag("en")
+                    }.pickerStyle(.segmented).labelsHidden()
+                }
+                Text("Se aplica a todos los canales, películas y series. Durante una película puedes cambiarlo solo para ella con los botones Audio y Subtítulos.")
+                    .font(.system(size: 13)).foregroundColor(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                Divider().opacity(0.4)
+                SettingsRow(title: "Cuenta de películas y series") { app.showSettings = false; app.pendingSeries = false; app.showAccount = true }
+                SettingsRow(title: "Cambiar dirección de la lista") { app.showSettings = false; app.openSetup(nil) }
+                HStack { Spacer(); Button("Listo") { app.showSettings = false }.keyboardShortcut(.defaultAction) }
+            }
+            .foregroundColor(.white)
+            .padding(26).frame(width: 500)
+            .glass(26, dark: 0.45)
         }
     }
 }

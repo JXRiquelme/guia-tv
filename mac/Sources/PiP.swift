@@ -19,6 +19,8 @@ final class PiPController: NSObject, AVPictureInPictureControllerDelegate, AVPic
     private var startTimeout: DispatchWorkItem?
 
     private(set) var active = false
+    /// Starting or running (the window may be hidden).
+    var busy: Bool { active || pip != nil }
     var isLive = true
     var onStateChange: ((Bool) -> Void)?
 

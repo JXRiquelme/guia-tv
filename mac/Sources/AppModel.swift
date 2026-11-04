@@ -61,6 +61,15 @@ final class AppModel: ObservableObject {
     @Published var dragTarget: Int?
     @Published var cardChannel: Int?
     @Published var showTopButtons = false
+    @Published var showSettings = false
+    @Published var audioLang = UserDefaults.standard.string(forKey: "audio_lang") ?? "es" {
+        didSet { UserDefaults.standard.set(audioLang, forKey: "audio_lang"); applyLanguages() }
+    }
+    @Published var subLang = UserDefaults.standard.string(forKey: "sub_lang") ?? "off" {
+        didSet { UserDefaults.standard.set(subLang, forKey: "sub_lang"); applyLanguages() }
+    }
+    /// Bumped when the chosen option of a channel changes, so views refresh.
+    @Published var altVersion = 0
     @Published var mini = false
     @Published var airplayActive = false
     @Published var airplayNotice = false
@@ -246,10 +255,38 @@ final class AppModel: ObservableObject {
         retries = 0
         playToken += 1
         status = nil
-        mpv.load(channels[current].url)
+        applyLanguages()
+        mpv.load(streamURL(channels[current]))
         armStallWatch()
         flashInfo()
     }
+
+    // MARK: - Channel options (Opción 2, 3…)
+
+    func altIndex(_ ch: Channel) -> Int {
+        max(0, min(ch.alts.count, UserDefaults.standard.integer(forKey: "alt_" + ch.name)))
+    }
+
+    func streamURL(_ ch: Channel) -> String { ch.options[altIndex(ch)].url }
+
+    func chooseOption(_ i: Int) {
+        guard vod == nil, let ch = currentChannel, ch.options.indices.contains(i) else { return }
+        if i != altIndex(ch) {
+            UserDefaults.standard.set(i, forKey: "alt_" + ch.name)
+            altVersion += 1
+            play(current)
+        } else { flashInfo(withButtons: true) }
+    }
+
+    /// "O" key: next option of the current channel.
+    func nextOption() {
+        guard let ch = currentChannel, !ch.alts.isEmpty else { return }
+        chooseOption((altIndex(ch) + 1) % ch.options.count)
+    }
+
+    // MARK: - Settings
+
+    func applyLanguages() { mpv.applyLanguages(audio: audioLang, subtitles: subLang) }
 
     private func armStallWatch() {
         stallTimer?.invalidate()
@@ -259,10 +296,12 @@ final class AppModel: ObservableObject {
             if self.retries < 3 {
                 self.retries += 1
                 self.status = "Reconectando… (\(self.retries)/3)"
-                if let ch = self.currentChannel { self.mpv.load(ch.url) }
+                if let ch = self.currentChannel { self.mpv.load(self.streamURL(ch)) }
                 self.armStallWatch()
             } else {
-                self.status = "No se pudo reproducir \(self.currentChannel?.name ?? "el canal").\nPrueba otro canal."
+                let hasAlts = !(self.currentChannel?.alts.isEmpty ?? true)
+                self.status = "No se pudo reproducir \(self.currentChannel?.name ?? "el canal").\n" +
+                    (hasAlts ? "Prueba otra opción del canal (botón ⇄ o tecla O)." : "Prueba otro canal.")
             }
         }
     }
@@ -309,7 +348,7 @@ final class AppModel: ObservableObject {
             if let w = self.vod, let acc = self.xtream() {
                 self.mpv.load(w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext), start: self.mpv.position)
             } else if let ch = self.currentChannel {
-                self.mpv.load(ch.url)
+                self.mpv.load(self.streamURL(ch))
             }
         }
     }
@@ -520,6 +559,7 @@ final class AppModel: ObservableObject {
         vod = entry
         recordHistory(entry)
         status = resume > 0 ? "Cargando…\nContinuando desde \(clock(resume))" : nil
+        applyLanguages()
         mpv.load(w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext), start: resume)
         flashVodBar()
         prepareAirPlay()
@@ -894,7 +934,7 @@ final class AppModel: ObservableObject {
             NSApp.keyWindow?.toggleFullScreen(nil)
             return true
         }
-        if showSetup || showAccount || filterKind != nil { return false }
+        if showSetup || showAccount || showSettings || filterKind != nil { return false }
         if showEPG {
             switch code {
             case up: epgMove(row: -1)
@@ -937,6 +977,7 @@ final class AppModel: ObservableObject {
         default:
             if ch == "g" { openEPG(); return true }
             if ch == "i" { flashInfo(); return true }
+            if ch == "o" { nextOption(); return true }
             if let n = Int(ch), (0...9).contains(n) { typeDigit(n); return true }
             return false
         }
@@ -958,7 +999,8 @@ final class AppModel: ObservableObject {
     }
 
     func back() {
-        if filterKind != nil { closeFilter() }
+        if showSettings { showSettings = false }
+        else if filterKind != nil { closeFilter() }
         else if showAccount { showAccount = false; if !browserOpen && vod == nil { play(current) } }
         else if showSetup, !channels.isEmpty { showSetup = false; play(current) }
         else if showEPG { closeEPG() }
@@ -990,7 +1032,7 @@ final class AppModel: ObservableObject {
     private func handleScroll(_ e: NSEvent) -> Bool {
         guard e.hasPreciseScrollingDeltas else { return false }
         if !e.momentumPhase.isEmpty { return swipeMode != .pass && swipeMode != .none }
-        if browserOpen || showSetup || showAccount || filterKind != nil || mini { return false }
+        if browserOpen || showSetup || showAccount || showSettings || filterKind != nil || mini { return false }
         let inverted = e.isDirectionInvertedFromDevice
         let fx = inverted ? e.scrollingDeltaX : -e.scrollingDeltaX   // + = fingers moving right
         let fy = inverted ? e.scrollingDeltaY : -e.scrollingDeltaY   // + = fingers moving down
