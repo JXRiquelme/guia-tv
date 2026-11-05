@@ -643,7 +643,7 @@ class MainActivity : Activity() {
             }, 2000L * retries)
         } else {
             val name = vod?.title ?: channels.getOrNull(current)?.name ?: "el canal"
-            showStatus("No se pudo reproducir $name.\n" + if (vod != null) "Atrás para volver." else "OK para ver los canales.")
+            showStatus("No se pudo reproducir $name.\n" + if (vod != null) "Atrás para volver." else "◀ para ver los canales.")
         }
     }
 
@@ -1484,7 +1484,7 @@ class MainActivity : Activity() {
             // ▼ = next channel in the list, ▲ = previous (like the side list and the guide)
             KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_PAGE_DOWN -> zap(1)
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_PAGE_UP -> zap(-1)
-            // OK: short press = panel (on release), long press = other options of the channel
+            // OK: short press = card, then panel (on release); long press = other options of the channel
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
                 if (event.repeatCount == 0) { okLong = false; okArmed = true }
                 else if (okArmed && !okLong && event.repeatCount >= 2) { okLong = true; chooseOption() }
@@ -1505,7 +1505,10 @@ class MainActivity : Activity() {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (okArmed && (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER)) {
             okArmed = false
-            if (!okLong && !event.isCanceled && vod == null && !overlayOpen() && panel.visibility != View.VISIBLE) showPanel()
+            if (!okLong && !event.isCanceled && vod == null && !overlayOpen() && panel.visibility != View.VISIBLE) {
+                // 1st OK: channel card (with its options); OK again while it is on screen: side panel
+                if (info.visibility == View.VISIBLE) showPanel() else showInfo(false)
+            }
             okLong = false
             return true
         }
