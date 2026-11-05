@@ -496,10 +496,11 @@ class MainActivity : Activity() {
         val load = DefaultLoadControl.Builder()
             .setBufferDurationsMs(15_000, 40_000, 1_500, 3_000)
             .build()
-        // Audio the phone can't decode by itself (AC-3, E-AC-3, MP2… common in TV streams) goes
-        // through the bundled FFmpeg decoder, so those channels are no longer silent.
+        // The device's own audio decoders go first (movies with 5.1 / AC-3 audio stalled at 0:00
+        // when FFmpeg was preferred); FFmpeg only takes formats the device can't decode
+        // (AC-3, E-AC-3, MP2… on phones without them), so those channels are not silent.
         val renderers = DefaultRenderersFactory(this)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
         val p = ExoPlayer.Builder(this, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(http, extractors))
