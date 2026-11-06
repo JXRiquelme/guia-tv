@@ -1,10 +1,10 @@
-Actualizado: 2026-11-05 19:57 UTC
+Actualizado: 2026-11-06 06:45 UTC
 
-fuente cl: 1991 programas usados
-fuente srv: 6497 programas usados
-fuente ar: 313 programas usados
-fuente dtv: 150 programas usados
-fuente es: 622 programas usados
+fuente cl: 3260 programas usados
+fuente srv: 6505 programas usados
+fuente ar: 484 programas usados
+fuente dtv: 147 programas usados
+fuente es: 588 programas usados
 canal13          cl / Canal.13.de.Chile.cl (ajuste +0 min)
 t13              srv / C13T13 (ajuste +0 min)
 13c              srv / C13CABH (ajuste +0 min)
@@ -63,5 +63,5 @@ daznlaliga1      es / DAZN.LaLiga.es (ajuste +0 min)
 daznlaliga2      es / DAZN.LaLiga.2.es (ajuste +0 min)
 laligatv         srv / MOLIGA (ajuste +0 min)
 rmtv             srv / RMAD (ajuste +0 min)
-ligacampeones    es / M+.Liga.de.Campeones.es (ajuste +0 min)
+ligacampeones    es / Movistar.Liga.de.Campeones.es (ajuste +0 min)
 cuatro           es / Cuatro.es (ajuste +0 min)
