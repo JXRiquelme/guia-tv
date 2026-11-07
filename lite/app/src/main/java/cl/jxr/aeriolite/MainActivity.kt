@@ -834,7 +834,9 @@ class MainActivity : Activity() {
         lockButton.setImageResource(if (locked) R.drawable.ic_lock else R.drawable.ic_lock_open)
         lockButton.setColorFilter(if (locked) ACCENT else Color.WHITE)
         main.removeCallbacks(hideInfo)
+        if (::portraitLock.isInitialized) portraitLock.setImageResource(if (locked) R.drawable.ic_lock else R.drawable.ic_lock_open)
         if (locked) {
+            if (portrait && vod == null) hidePortraitChrome()
             info.visibility = View.GONE
             menuButton.visibility = View.GONE
             if (vod != null) { main.removeCallbacks(hideVodBarTask); vodBar.visibility = View.GONE }
@@ -844,6 +846,9 @@ class MainActivity : Activity() {
         } else if (vod != null) {
             showTopButtons()
             showVodBar()
+        } else if (portrait) {
+            topButtons.visibility = View.GONE
+            showPortraitChrome()
         } else showInfo(true)
     }
 
@@ -912,7 +917,8 @@ class MainActivity : Activity() {
     private var bottomInset = 0
     private lateinit var portraitTabs: LinearLayout
     private lateinit var portraitTabViews: List<TextView>
-    private lateinit var portraitGuide: TextView
+    private lateinit var portraitGuide: ImageView
+    private lateinit var portraitLock: ImageView
 
     private fun buildPortraitBar() {
         // Canales / Películas / Series at the very top (under the status bar)
@@ -953,24 +959,15 @@ class MainActivity : Activity() {
         fun icon(res: Int, action: () -> Unit) = ImageView(this).apply {
             setImageResource(res)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
-            setPadding(dp(9), dp(9), dp(9), dp(9))
-            background = surfaceBg(0xE60A1E5A.toInt(), 20, 0, 20)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = surfaceBg(0xE60A1E5A.toInt(), 19, 0, 19)
             isClickable = true
             setOnClickListener { action() }
         }
-        fun add(v: View, w: Int = dp(40)) = portraitBar.addView(v, LinearLayout.LayoutParams(w, dp(40)).apply { rightMargin = dp(8) })
+        fun add(v: View, w: Int = dp(38)) = portraitBar.addView(v, LinearLayout.LayoutParams(w, dp(38)).apply { rightMargin = dp(6) })
         // only while the guide is folded away: brings it back
-        portraitGuide = text(14f, bold = true).apply {
-            this.text = "Guía"
-            setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_menu, 0, 0, 0)
-            compoundDrawablePadding = dp(6)
-            gravity = Gravity.CENTER
-            setPadding(dp(12), 0, dp(14), 0)
-            background = surfaceBg(0xE60A1E5A.toInt(), 20, 0, 20)
-            isClickable = true
-            setOnClickListener { expandGuide() }
-        }
-        portraitBar.addView(portraitGuide, LinearLayout.LayoutParams(0, dp(40), 1f).apply { rightMargin = dp(8) })
+        portraitGuide = icon(R.drawable.ic_grid) { expandGuide() }
+        add(portraitGuide)
         portraitOption = text(14f, bold = true).apply {
             setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_swap, 0, 0, 0)
             compoundDrawablePadding = dp(6)
@@ -980,13 +977,15 @@ class MainActivity : Activity() {
             isClickable = true
             setOnClickListener { chooseOption() }
         }
-        portraitBar.addView(portraitOption, LinearLayout.LayoutParams(0, dp(40), 1f).apply { rightMargin = dp(8) })
+        portraitBar.addView(portraitOption, LinearLayout.LayoutParams(0, dp(38), 1f).apply { rightMargin = dp(6) })
         portraitCast = icon(R.drawable.ic_cast) { castMenu() }
         portraitPip = icon(R.drawable.ic_pip) { enterPipNow(onlyIfPlaying = false) }
         add(portraitCast)
         add(portraitPip)
         add(icon(R.drawable.ic_info) { toggleStats() })
-        portraitBar.addView(icon(R.drawable.ic_settings) { openSettings() }, LinearLayout.LayoutParams(dp(40), dp(40)))
+        portraitLock = icon(R.drawable.ic_lock_open) { toggleLock() }
+        add(portraitLock)
+        portraitBar.addView(icon(R.drawable.ic_settings) { openSettings() }, LinearLayout.LayoutParams(dp(38), dp(38)))
         root.addView(portraitBar, FrameLayout.LayoutParams(-1, dp(52), Gravity.TOP))
     }
 
@@ -995,12 +994,14 @@ class MainActivity : Activity() {
         val ch = channels.getOrNull(current)
         if (ch == null || ch.alts.isEmpty()) portraitOption.visibility = View.GONE
         else {
-            portraitOption.text = ch.options[altOverride?.takeIf { it < ch.options.size } ?: altIndex(ch)].label
+            val label = ch.options[altOverride?.takeIf { it < ch.options.size } ?: altIndex(ch)].label
+            portraitOption.text = label.replace("Opción", "Op.").substringBefore(" (")
             portraitOption.visibility = View.VISIBLE
         }
         portraitCast.visibility = if (caster != null) View.VISIBLE else View.GONE
         portraitPip.visibility = if (pipAllowed && castingTo == null) View.VISIBLE else View.GONE
         portraitGuide.visibility = if (guideCollapsed) View.VISIBLE else View.GONE
+        portraitLock.visibility = if (guideCollapsed) View.VISIBLE else View.GONE
         portraitTabViews.forEachIndexed { i, t ->
             val active = i == TAB_LIVE
             t.setTextColor(if (active) Color.WHITE else MUTED)
@@ -1034,37 +1035,115 @@ class MainActivity : Activity() {
         val live = vod == null
         val top = topInset + if (live) dp(44) else 0
         if (live && !guideCollapsed) return intArrayOf(top, w * 9 / 16)
-        val top2 = topInset
-        return intArrayOf(top2, (h - bottomInset - top2).coerceAtLeast(w * 9 / 16))
+        return intArrayOf(0, h)
     }
 
     /** Header of the upright guide dragged down: fold the guide away. */
-    private fun collapseGuide() {
-        if (guideCollapsed) return
-        portraitBar.animate().alpha(0f).setDuration(180).start()
-        epgBox.animate().translationY(epgBox.height.toFloat()).alpha(0f).setDuration(260).setInterpolator(ease).withEndAction {
-            guideCollapsed = true
-            epgBox.translationY = 0f
-            epgBox.alpha = 1f
-            moveVideoSmoothly { applyLayoutMode() }
+    // Guide open/close (upright): everything follows the finger, then settles.
+    // progress 0 = player only, 1 = player on top + guide.
+    private var guideAnim: ValueAnimator? = null
+    private var guideDragging = false
+    private var guideFrom = 0f          // progress when the drag started
+
+    private fun expandedVideoCenter() = topInset + dp(44) + root.width * 9 / 32
+    private fun guideTopExpanded() = topInset + dp(44) + root.width * 9 / 16 + dp(52)
+
+    /** Shows the guide in place (below the screen) so it can be pulled up. */
+    private fun prepareGuideOpening() {
+        val h = root.height
+        val top = guideTopExpanded()
+        place(epgBox, FrameLayout.LayoutParams(-1, h - top - bottomInset - dp(8), Gravity.TOP).apply { setMargins(dp(8), top, dp(8), 0) })
+        epgCloseButton.visibility = View.GONE
+        epgBox.animate().cancel()
+        epgBox.translationX = 0f
+        epgBox.alpha = 1f
+        epgBox.translationY = (h - top).toFloat()
+        epgBox.visibility = View.VISIBLE
+        syncPortraitGuide()
+        main.removeCallbacks(hideInfo)
+        portraitTabs.animate().cancel()
+        portraitTabs.alpha = 1f
+        portraitTabs.visibility = View.VISIBLE
+    }
+
+    /** Draws the in-between state. Layout stays as it was when the gesture started. */
+    private fun guideProgress(p: Float) {
+        val q = p.coerceIn(0f, 1f)
+        val h = root.height
+        val travel = (h - guideTopExpanded()).toFloat()
+        val shift = (expandedVideoCenter() - h / 2).toFloat()   // negative: the picture goes up
+        if (guideCollapsed) {
+            // laid out as "player only": move towards the open state
+            surface.translationY = shift * q
+            epgBox.translationY = travel * (1 - q)
+            portraitBar.alpha = 1 - q
+            info.alpha = 1 - q
+        } else {
+            // laid out as "open": move towards the player-only state
+            surface.translationY = -shift * (1 - q)
+            epgBox.translationY = travel * (1 - q)
+            portraitBar.alpha = q
+        }
+    }
+
+    /** Ends at [open], re-lays out without a visible jump. */
+    private fun settleGuide(open: Boolean, velocity: Float = 0f) {
+        val now = currentGuideProgress()
+        guideAnim?.cancel()
+        guideAnim = ValueAnimator.ofFloat(now, if (open) 1f else 0f).apply {
+            duration = (260 * abs((if (open) 1f else 0f) - now)).toLong().coerceIn(120, 300)
+            interpolator = ease
+            addUpdateListener { guideProgress(it.animatedValue as Float) }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (guideAnim !== animation) return
+                    guideAnim = null
+                    commitGuide(open)
+                }
+            })
+            start()
+        }
+    }
+
+    private fun currentGuideProgress(): Float {
+        val travel = (root.height - guideTopExpanded()).toFloat().coerceAtLeast(1f)
+        return if (epgBox.visibility == View.VISIBLE) (1 - epgBox.translationY / travel).coerceIn(0f, 1f) else 0f
+    }
+
+    private fun commitGuide(open: Boolean) {
+        val changed = guideCollapsed == open
+        guideCollapsed = !open
+        if (changed) applyLayoutMode()
+        // translations back to zero in the same frame as the new layout
+        surface.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                surface.viewTreeObserver.removeOnPreDrawListener(this)
+                surface.translationY = 0f
+                epgBox.translationY = 0f
+                return true
+            }
+        })
+        if (open) {
+            info.visibility = View.GONE
+            info.alpha = 1f
+            portraitBar.alpha = 0f
+            portraitBar.animate().alpha(1f).setDuration(200).start()
+        } else {
+            epgBox.visibility = View.GONE
             showPortraitChrome()
-        }.start()
+        }
+    }
+
+    private fun collapseGuide() {
+        if (guideCollapsed || !portrait) return
+        settleGuide(open = false)
     }
 
     private fun expandGuide() {
-        if (!guideCollapsed) return
-        main.removeCallbacks(hideInfo)
-        guideCollapsed = false
-        info.animate().cancel()
-        info.visibility = View.GONE
-        moveVideoSmoothly { applyLayoutMode() }
-        portraitTabs.alpha = 1f
-        portraitTabs.visibility = View.VISIBLE
-        portraitBar.alpha = 0f
-        portraitBar.animate().alpha(1f).setDuration(260).start()
-        epgBox.translationY = (root.height - (epgBox.layoutParams as FrameLayout.LayoutParams).topMargin).toFloat()
-        epgBox.alpha = 0f
-        epgBox.animate().translationY(0f).alpha(1f).setDuration(320).setInterpolator(ease).start()
+        if (!guideCollapsed || !portrait || locked) return
+        prepareGuideOpening()
+        info.visibility = View.VISIBLE
+        settleGuide(open = true)
     }
 
     /** Re-lays out and lets the picture glide from where it was to its new place. */
@@ -1105,13 +1184,35 @@ class MainActivity : Activity() {
 
     /** Swipe up on the channel card (upright): open the guide. */
     private var cardDownY = 0f
+    private var cardVelocity: VelocityTracker? = null
     private fun cardTouch(e: MotionEvent): Boolean {
         if (!portrait || !guideCollapsed || vod != null) return false
+        if (locked) { if (e.actionMasked == MotionEvent.ACTION_UP) showLockOnly(); return true }
+        val travel = (root.height - guideTopExpanded()).toFloat()
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { cardDownY = e.rawY; main.removeCallbacks(hideInfo) }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            MotionEvent.ACTION_DOWN -> {
+                cardDownY = e.rawY
+                guideDragging = false
+                main.removeCallbacks(hideInfo)
+                cardVelocity?.recycle()
+                cardVelocity = VelocityTracker.obtain().also { it.addMovement(e) }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                cardVelocity?.addMovement(e)
                 val dy = e.rawY - cardDownY
-                if (dy < -dp(40)) expandGuide() else main.postDelayed(hideInfo, 5000)
+                if (!guideDragging && dy < -slop) { guideDragging = true; guideAnim?.cancel(); prepareGuideOpening() }
+                if (guideDragging) guideProgress(-dy / travel)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                cardVelocity?.addMovement(e)
+                cardVelocity?.computeCurrentVelocity(1000)
+                val vy = cardVelocity?.yVelocity ?: 0f
+                cardVelocity?.recycle(); cardVelocity = null
+                if (guideDragging) {
+                    guideDragging = false
+                    val p = -(e.rawY - cardDownY) / travel
+                    settleGuide(open = p > 0.35f || vy < -dp(800))
+                } else main.postDelayed(hideInfo, 5000)
             }
         }
         return true
@@ -1182,9 +1283,10 @@ class MainActivity : Activity() {
                 place(epgBox, FrameLayout.LayoutParams(-1, h - guideTop - bottomInset - dp(8), Gravity.TOP).apply {
                     setMargins(dp(8), guideTop, dp(8), 0)
                 })
-                epgBox.animate().cancel()
-                epgBox.translationX = 0f
-                epgBox.alpha = 1f
+                if (guideAnim == null && !epgDragging) {
+                    epgBox.translationX = 0f
+                    epgBox.alpha = 1f
+                }
                 epgBox.visibility = View.VISIBLE
                 epgCloseButton.visibility = View.GONE
                 info.visibility = View.GONE
@@ -2681,18 +2783,16 @@ class MainActivity : Activity() {
     private fun epgDrag(e: MotionEvent): Boolean {
         if (portrait) {
             // upright: drag the guide down to leave only the player
+            val travel = (root.height - guideTopExpanded()).toFloat()
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { epgDragY = e.rawY; epgDragging = false }
                 MotionEvent.ACTION_MOVE -> {
                     val dy = e.rawY - epgDragY
-                    if (!epgDragging && dy > slop * 2) epgDragging = true
-                    if (epgDragging) epgBox.translationY = dy.coerceAtLeast(0f)
+                    if (!epgDragging && dy > slop) { epgDragging = true; guideAnim?.cancel() }
+                    if (epgDragging) guideProgress(1 - dy.coerceAtLeast(0f) / travel)
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (epgDragging) {
-                        if (epgBox.translationY > dp(70)) collapseGuide()
-                        else epgBox.animate().translationY(0f).setDuration(160).start()
-                    }
+                    if (epgDragging) settleGuide(open = (e.rawY - epgDragY) < travel * 0.3f)
                     val was = epgDragging
                     epgDragging = false
                     return was
@@ -2763,7 +2863,12 @@ class MainActivity : Activity() {
 
     /** Cast + picture-in-picture buttons (top right), only on phones/tablets. */
     private fun showTopButtons() {
-        if (isTv || portrait) return
+        if (isTv || (portrait && vod == null && !locked)) return
+        if (portrait) (topButtons.layoutParams as FrameLayout.LayoutParams).let {
+            if (it.topMargin != topInset + dp(12)) { it.topMargin = topInset + dp(12); topButtons.layoutParams = it }
+        } else (topButtons.layoutParams as FrameLayout.LayoutParams).let {
+            if (it.topMargin != dp(SIDE_TOP)) { it.topMargin = dp(SIDE_TOP); topButtons.layoutParams = it }
+        }
         castButton.visibility = if (caster != null && !locked) View.VISIBLE else View.GONE
         pipButton.visibility = if (pipAllowed && castingTo == null && !locked) View.VISIBLE else View.GONE
         infoButton.visibility = if (castingTo == null && !locked) View.VISIBLE else View.GONE
