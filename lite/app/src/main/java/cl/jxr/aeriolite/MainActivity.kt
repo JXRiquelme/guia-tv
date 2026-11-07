@@ -807,7 +807,7 @@ class MainActivity : Activity() {
         val height = (h - top - dp(20)).coerceAtLeast(dp(90))
         // movie bar: same height as the sliders, between them, with the same gap on each side
         if (!portrait) {
-            val side = margin + button + dp(12)
+            val side = margin
             val lp = vodBar.layoutParams as FrameLayout.LayoutParams
             if (lp.bottomMargin != dp(20) || lp.height != -2 || lp.leftMargin != side || lp.gravity != Gravity.BOTTOM) {
                 lp.gravity = Gravity.BOTTOM
@@ -901,9 +901,8 @@ class MainActivity : Activity() {
             vodCenter.visibility = center
             if (center == View.VISIBLE) { vodCenter.alpha = 0f; vodCenter.animate().alpha(1f).setDuration(180).start() }
         }
-        val show = !isTv && !portrait && !locked && (
-            (topButtons.visibility == View.VISIBLE && menuButton.visibility == View.VISIBLE) ||
-                (vod != null && topButtons.visibility == View.VISIBLE))
+        val show = !isTv && !portrait && !locked && vod == null &&
+            topButtons.visibility == View.VISIBLE && menuButton.visibility == View.VISIBLE
         val target = if (show) View.VISIBLE else View.GONE
         if (brightSlider.visibility != target) {
             if (show) {
@@ -977,7 +976,7 @@ class MainActivity : Activity() {
         }
         fun add(v: View, w: Int = dp(38)) = portraitBar.addView(v, LinearLayout.LayoutParams(w, dp(38)).apply { rightMargin = dp(6) })
         // only while the guide is folded away: brings it back
-        portraitGuide = icon(R.drawable.ic_grid) { expandGuide() }
+        portraitGuide = icon(R.drawable.ic_grid) { if (guideCollapsed) expandGuide() else collapseGuide() }
         add(portraitGuide)
         portraitOption = text(14f, bold = true).apply {
             setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_swap, 0, 0, 0)
@@ -994,7 +993,10 @@ class MainActivity : Activity() {
         add(portraitCast)
         add(portraitPip)
         add(icon(R.drawable.ic_info) { toggleStats() })
-        portraitLock = icon(R.drawable.ic_lock_open) { toggleLock() }
+        portraitLock = icon(R.drawable.ic_lock_open) {
+            // the lock is for the player: fold the guide away first
+            if (!guideCollapsed && !locked) { collapseGuide(); main.postDelayed({ toggleLock() }, 320) } else toggleLock()
+        }
         add(portraitLock)
         portraitBar.addView(icon(R.drawable.ic_settings) { openSettings() }, LinearLayout.LayoutParams(dp(38), dp(38)))
         root.addView(portraitBar, FrameLayout.LayoutParams(-1, dp(52), Gravity.TOP))
@@ -1011,8 +1013,7 @@ class MainActivity : Activity() {
         }
         portraitCast.visibility = if (caster != null) View.VISIBLE else View.GONE
         portraitPip.visibility = if (pipAllowed && castingTo == null) View.VISIBLE else View.GONE
-        portraitGuide.visibility = if (guideCollapsed) View.VISIBLE else View.GONE
-        portraitLock.visibility = if (guideCollapsed) View.VISIBLE else View.GONE
+        portraitGuide.setColorFilter(if (guideCollapsed) Color.WHITE else ACCENT)
         portraitTabViews.forEachIndexed { i, t ->
             val active = i == TAB_LIVE
             t.setTextColor(if (active) Color.WHITE else MUTED)
@@ -1109,8 +1110,7 @@ class MainActivity : Activity() {
             portraitBar.translationY = -barShift * (1 - q)
         }
         // the grid button and the lock only belong to the player-only state
-        portraitGuide.alpha = 1 - q
-        portraitLock.alpha = 1 - q
+
     }
 
     /** Ends at [open], re-lays out without a visible jump. */
@@ -1210,6 +1210,8 @@ class MainActivity : Activity() {
         if (!GLASS) return
         val show = portrait && when {
             locked -> false
+            browser.visibility == View.VISIBLE || seriesView.visibility == View.VISIBLE || panel.visibility == View.VISIBLE ||
+                setup.visibility == View.VISIBLE || account.visibility == View.VISIBLE || pickerLayer.visibility == View.VISIBLE -> true
             vod != null -> vodBar.visibility == View.VISIBLE
             else -> !guideCollapsed || chromeShown
         }
@@ -1710,6 +1712,7 @@ class MainActivity : Activity() {
         if (browser.visibility != View.VISIBLE) {
             browser.alpha = 0f
             browser.visibility = View.VISIBLE
+            if (portrait) { main.removeCallbacks(hideInfo); updateStatusBar() }
             browser.animate().alpha(1f).setDuration(220).start()
         } else if (switching) {
             grid.alpha = 0f
@@ -1739,6 +1742,7 @@ class MainActivity : Activity() {
     private fun closeBrowser() {
         hideKeyboard()
         browser.visibility = View.GONE
+        if (portrait) updateStatusBar()
         root.requestFocus()
         shutter.visibility = View.VISIBLE
         if (channels.isNotEmpty()) play(current)
@@ -2663,16 +2667,14 @@ class MainActivity : Activity() {
                         dragging = true
                         adjust = if (downX < root.width / 2f) 1 else 2
                         adjustStart = if (adjust == 1) currentBrightness() else currentVolume()
-                        showVodBar()
-                        showTopButtons()
-                        holdControls(true)
                     }
                 }
                 if (!dragging && (abs(dx) > slop * 2 || abs(dy) > slop * 2)) tracking = false
                 if (dragging && vod == null) dragTo(dy)
                 if (dragging && adjust != 0) {
                     val v = (adjustStart - dy / (root.height * 0.75f)).coerceIn(0f, 1f)
-                    if (adjust == 1) { setBrightness(v); brightSlider.value = v } else { setVolume(v); volSlider.value = v }
+                    if (adjust == 1) setBrightness(v) else setVolume(v)
+                    showAdjustHint(adjust == 1, v)
                 }
             }
             MotionEvent.ACTION_UP -> {
@@ -2683,7 +2685,7 @@ class MainActivity : Activity() {
                 val dy = e.y - downY
                 val horizontalSwipe = abs(dx) > dp(80) && abs(dx) > abs(dy) * 1.5f
                 when {
-                    dragging && adjust != 0 -> holdControls(false)
+                    dragging && adjust != 0 -> {}
                     // one swipe = 10 s, like the buttons
                     dragging && vod != null -> seekBy(if (dx > 0) 10_000L else -10_000L)
                     dragging -> endDrag(dy, vy)
@@ -2700,7 +2702,6 @@ class MainActivity : Activity() {
                 velocity = null
             }
             MotionEvent.ACTION_CANCEL -> {
-                if (adjust != 0) holdControls(false)
                 adjust = 0
                 if (dragging && vod == null) endDrag(0f, 0f)
                 dragging = false
@@ -2716,6 +2717,30 @@ class MainActivity : Activity() {
     private fun currentVolume(): Float {
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
         return audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max
+    }
+
+    private var adjustHint: TextView? = null
+    private val hideAdjustHint = Runnable { adjustHint?.animate()?.alpha(0f)?.setDuration(250)?.start() }
+
+    /** Small glass pill (☀ / 🔊 and a percentage) while brightness or volume is changed by swiping. */
+    private fun showAdjustHint(brightness: Boolean, v: Float) {
+        val hint = adjustHint ?: text(15f, bold = true).apply {
+            gravity = Gravity.CENTER
+            compoundDrawablePadding = dp(8)
+            setPadding(dp(16), dp(8), dp(18), dp(8))
+            glassy(0xB3000000.toInt(), 18, 1)
+            translationZ = dp(20).toFloat()
+            root.addView(this, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = topInset + dp(28) })
+            adjustHint = this
+        }
+        (hint.layoutParams as FrameLayout.LayoutParams).let { if (it.topMargin != topInset + dp(28)) { it.topMargin = topInset + dp(28); hint.layoutParams = it } }
+        hint.setCompoundDrawablesWithIntrinsicBounds(if (brightness) R.drawable.ic_brightness else R.drawable.ic_volume, 0, 0, 0)
+        hint.text = "${Math.round(v * 100)} %"
+        hint.animate().cancel()
+        hint.alpha = 1f
+        hint.visibility = View.VISIBLE
+        main.removeCallbacks(hideAdjustHint)
+        main.postDelayed(hideAdjustHint, 900)
     }
 
     private fun canDrag() = !overlayOpen() && panel.visibility != View.VISIBLE &&
@@ -2904,7 +2929,7 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- overlays
 
     private val hideInfo = Runnable {
-        if (portrait && guideCollapsed && vod == null) hidePortraitChrome()
+        if (portrait && guideCollapsed && vod == null) { if (browser.visibility != View.VISIBLE) hidePortraitChrome() }
         else if (!portrait || vod != null) info.visibility = View.GONE
         menuButton.visibility = View.GONE
         if (vod == null || locked) topButtons.visibility = View.GONE
