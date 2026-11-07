@@ -835,6 +835,7 @@ class MainActivity : Activity() {
         lockButton.setColorFilter(if (locked) ACCENT else Color.WHITE)
         main.removeCallbacks(hideInfo)
         if (::portraitLock.isInitialized) portraitLock.setImageResource(if (locked) R.drawable.ic_lock else R.drawable.ic_lock_open)
+        if (portrait) updateStatusBar()
         if (locked) {
             if (portrait && vod == null) hidePortraitChrome()
             info.visibility = View.GONE
@@ -952,7 +953,6 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(10), dp(6), dp(10), dp(6))
-            setBackgroundColor(Color.BLACK)
             isClickable = true
             visibility = View.GONE
         }
@@ -1045,6 +1045,15 @@ class MainActivity : Activity() {
     private var guideDragging = false
     private var guideFrom = 0f          // progress when the drag started
 
+    private fun barTopExpanded() = topInset + dp(44) + root.width * 9 / 16
+    private fun barTopCollapsed(): Int {
+        val infoH = if (info.height > 0 && info.visibility == View.VISIBLE) info.height else {
+            info.measure(View.MeasureSpec.makeMeasureSpec(root.width - dp(20), View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
+            info.measuredHeight
+        }
+        return root.height - bottomInset - dp(14) - infoH - dp(52)
+    }
+
     private fun expandedVideoCenter() = topInset + dp(44) + root.width * 9 / 32
     private fun guideTopExpanded() = topInset + dp(44) + root.width * 9 / 16 + dp(52)
 
@@ -1072,18 +1081,25 @@ class MainActivity : Activity() {
         val h = root.height
         val travel = (h - guideTopExpanded()).toFloat()
         val shift = (expandedVideoCenter() - h / 2).toFloat()   // negative: the picture goes up
+        val barShift = (barTopExpanded() - barTopCollapsed()).toFloat()   // negative: the bar goes up
         if (guideCollapsed) {
             // laid out as "player only": move towards the open state
             surface.translationY = shift * q
             epgBox.translationY = travel * (1 - q)
-            portraitBar.alpha = 1 - q
+            portraitBar.alpha = 1f
+            portraitBar.translationY = barShift * q
             info.alpha = 1 - q
+            info.translationY = travel * q * 0.5f
         } else {
             // laid out as "open": move towards the player-only state
             surface.translationY = -shift * (1 - q)
             epgBox.translationY = travel * (1 - q)
-            portraitBar.alpha = q
+            portraitBar.alpha = 1f
+            portraitBar.translationY = -barShift * (1 - q)
         }
+        // the grid button and the lock only belong to the player-only state
+        portraitGuide.alpha = 1 - q
+        portraitLock.alpha = 1 - q
     }
 
     /** Ends at [open], re-lays out without a visible jump. */
@@ -1120,14 +1136,17 @@ class MainActivity : Activity() {
                 surface.viewTreeObserver.removeOnPreDrawListener(this)
                 surface.translationY = 0f
                 epgBox.translationY = 0f
+                portraitBar.translationY = 0f
+                info.translationY = 0f
+                portraitGuide.alpha = 1f
+                portraitLock.alpha = 1f
                 return true
             }
         })
         if (open) {
             info.visibility = View.GONE
             info.alpha = 1f
-            portraitBar.alpha = 0f
-            portraitBar.animate().alpha(1f).setDuration(200).start()
+            portraitBar.alpha = 1f
         } else {
             epgBox.visibility = View.GONE
             showPortraitChrome()
@@ -1163,6 +1182,7 @@ class MainActivity : Activity() {
     private fun showPortraitChrome() {
         if (!portrait || !guideCollapsed || vod != null) return
         chromeShown = true
+        updateStatusBar()
         updateInfo()
         updatePortraitBar()
         for (v in listOf(portraitTabs, portraitBar, info)) {
@@ -1174,8 +1194,21 @@ class MainActivity : Activity() {
         main.postDelayed(hideInfo, 5000)
     }
 
+    /** Status bar: shown upright with the controls, hidden with them (and always sideways). */
+    private fun updateStatusBar() {
+        if (!GLASS) return
+        val show = portrait && when {
+            locked -> false
+            vod != null -> vodBar.visibility == View.VISIBLE
+            else -> !guideCollapsed || chromeShown
+        }
+        if (show) window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        else window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+    }
+
     private fun hidePortraitChrome() {
         chromeShown = false
+        updateStatusBar()
         for (v in listOf(portraitTabs, portraitBar, info)) {
             v.animate().cancel()
             v.animate().alpha(0f).setDuration(300).withEndAction { if (!chromeShown) v.visibility = View.GONE }.start()
@@ -1244,9 +1277,7 @@ class MainActivity : Activity() {
         portrait = !isTv && GLASS && h > w && !(Build.VERSION.SDK_INT >= 24 && isInPictureInPictureMode)
         epgView.setCompact(portrait)
         if (!GLASS) { fitVideo(); return }
-        // status bar: visible upright, hidden sideways
-        if (portrait) window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
-        else window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        updateStatusBar()
         readInsets()
         if (portrait) {
             val box = videoBox()
@@ -1531,6 +1562,7 @@ class MainActivity : Activity() {
                 else -> {
                     vodBar.visibility = View.GONE
                     topButtons.visibility = View.GONE
+                    updateStatusBar()
                     seekMode = false
                     root.requestFocus()
                 }
@@ -1556,6 +1588,7 @@ class MainActivity : Activity() {
         vodSub.text = w.subtitle
         vodSub.visibility = if (w.subtitle.isEmpty()) View.GONE else View.VISIBLE
         vodBar.visibility = View.VISIBLE
+        if (portrait) updateStatusBar()
         updateVodBar()
         main.removeCallbacks(vodBarUpdater)
         main.postDelayed(vodBarUpdater, 1000)
@@ -1565,6 +1598,7 @@ class MainActivity : Activity() {
 
     private fun hideVodBar() {
         vodBar.visibility = View.GONE
+        if (portrait) updateStatusBar()
         topButtons.visibility = View.GONE
         if (vodBar.hasFocus()) root.requestFocus()
         main.removeCallbacks(vodBarUpdater)
@@ -3227,6 +3261,14 @@ class MainActivity : Activity() {
         col.addView(infoNext)
         info.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
         info.setOnTouchListener { _, e -> cardTouch(e) }
+        info.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop && portrait && guideCollapsed && vod == null && ::portraitBar.isInitialized) {
+                (portraitBar.layoutParams as FrameLayout.LayoutParams).let {
+                    val want = bottomInset + dp(14) + (bottom - top)
+                    if (it.gravity == Gravity.BOTTOM && it.bottomMargin != want) { it.bottomMargin = want; portraitBar.layoutParams = it }
+                }
+            }
+        }
         // ⇄ Opción N: other streams of the same channel
         infoOptions = text(if (compact) 13f else 16f, bold = true).apply {
             setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_swap, 0, 0, 0)
