@@ -1,8 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <application>
         <meta-data
             android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
             android:value="cl.jxr.aeriolite.LiteCastOptions" />
+        <!-- Phones and tablets follow the device: upright = player + guide, sideways = full screen -->
+        <activity
+            android:name=".MainActivity"
+            android:screenOrientation="fullUser"
+            tools:replace="android:screenOrientation" />
     </application>
 </manifest>

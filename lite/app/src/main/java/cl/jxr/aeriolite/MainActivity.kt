@@ -119,7 +119,6 @@ class MainActivity : Activity() {
     private var playlistAccount: XtreamAccount? = null
     private var current = 0
     private var player: ExoPlayer? = null
-    private var retries = 0
     private var lastBack = 0L
     private var digits = ""
     private var videoW = 0
@@ -183,6 +182,14 @@ class MainActivity : Activity() {
     private lateinit var topButtons: LinearLayout
     private lateinit var infoButton: ImageView
     private lateinit var lockButton: ImageView
+    /** Phone held upright: video on top, a row of buttons, then the guide fixed below. */
+    private var portrait = false
+    private lateinit var portraitBar: LinearLayout
+    private lateinit var portraitOption: TextView
+    private lateinit var portraitCast: ImageView
+    private lateinit var portraitPip: ImageView
+    private lateinit var epgCloseButton: View
+    private val landscapeParams = HashMap<View, FrameLayout.LayoutParams>()
     private lateinit var brightSlider: VerticalSlider
     private lateinit var volSlider: VerticalSlider
     /** Controls locked against accidental touches (phones). */
@@ -527,18 +534,18 @@ class MainActivity : Activity() {
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
-                    Player.STATE_BUFFERING -> if (card.visibility != View.VISIBLE) {
+                    Player.STATE_BUFFERING -> if (card.visibility != View.VISIBLE && recoverAttempts == 0) {
                         val note = resumeNote
                         showStatus(if (vod != null && note != null) "Cargando…\n$note" else "Cargando…")
                     }
                     Player.STATE_READY -> {
-                        main.removeCallbacks(stallWatch)
-                        retries = 0
+                        stallSince = 0L
+                        recoverAttempts = 0
                         resumeNote = null
                         hideStatus()
                         fadeCard()
                     }
-                    Player.STATE_ENDED -> if (vod != null) vodEnded() else retry()
+                    Player.STATE_ENDED -> if (vod != null) vodEnded() else recover()
                     else -> {}
                 }
             }
@@ -563,7 +570,7 @@ class MainActivity : Activity() {
                     player?.prepare()
                 } else {
                     fadeCard()
-                    retry()
+                    recover()
                 }
             }
 
@@ -577,6 +584,8 @@ class MainActivity : Activity() {
             }
         })
         player = p
+        main.removeCallbacks(health)
+        main.postDelayed(health, 1_000)
         return p
     }
 
@@ -591,7 +600,7 @@ class MainActivity : Activity() {
         subtitleText.visibility = View.GONE
         if (aspectMode != 0) { aspectMode = 0; fitVideo() }
         current = index.coerceIn(0, channels.size - 1)
-        retries = 0
+        recoverAttempts = 0
         if (castingTo != null) {
             castMedia()?.let { caster?.send(it) }
             showInfo(false)
@@ -601,45 +610,106 @@ class MainActivity : Activity() {
         if (!BuildConfig.TV) prefs.edit().putString("last_channel", ch.name).apply()
         measuredFps = 0f
         lastFrames = -1
-        val url = streamUrl(ch)
-        val item = MediaItem.Builder().setUri(url)
-        if (url.contains(".m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
+        altOverride = null
+        recoverAttempts = 0
+        stallSince = 0L
         val p = ensurePlayer()
         applyLanguages(p)
-        p.setMediaItem(item.build())
+        p.setMediaItem(liveItem(ch))
         p.prepare()
         p.playWhenReady = true
         playToken++
-        main.removeCallbacks(stallWatch)
-        main.postDelayed(stallWatch, 12_000)
         showInfo(false)
+        if (portrait) applyLayoutMode()
+    }
+
+    private fun liveItem(ch: Channel): MediaItem {
+        val url = ch.options.getOrNull(altOverride ?: -1)?.url ?: streamUrl(ch)
+        val item = MediaItem.Builder().setUri(url)
+        if (url.contains(".m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
+        return item.build()
+    }
+
+    // ---------------------------------------------------------------- self-healing playback
+
+    /** Option tried automatically when the chosen one stops working (not saved). */
+    private var altOverride: Int? = null
+    private var recoverAttempts = 0
+    private var stallSince = 0L
+
+    /**
+     * Checks the stream every second. If it is stuck (buffering, or failed) for a few seconds
+     * it is reopened quietly with a fresh connection, keeping the last picture on screen. After
+     * a few failed tries it moves to the channel's next option; it never gives up while you
+     * stay on the channel, and only says something if it takes long.
+     */
+    private val health: Runnable = object : Runnable {
+        override fun run() {
+            val p = player
+            if (p != null && castingTo == null && p.playWhenReady) {
+                val failed = p.playbackState == Player.STATE_IDLE && p.playerError != null
+                val stuck = p.playbackState == Player.STATE_BUFFERING || failed
+                val now = SystemClock.elapsedRealtime()
+                if (stuck) {
+                    if (stallSince == 0L) stallSince = now
+                    // first open gets more time; later stalls are fixed faster
+                    val limit = when {
+                        failed -> 1_500L
+                        recoverAttempts == 0 && p.currentPosition < 1_000 -> 10_000L
+                        else -> 6_000L
+                    }
+                    if (now - stallSince >= limit) recover()
+                } else stallSince = 0L
+            }
+            main.postDelayed(this, 1_000)
+        }
+    }
+
+    private fun recover() {
+        val p = player ?: return
+        if (castingTo != null) return
+        recoverAttempts++
+        stallSince = SystemClock.elapsedRealtime()
+        val token = playToken
+        val w = vod
+        if (w != null) {
+            // movie / episode: reopen at the same second
+            val pos = p.currentPosition
+            if (recoverAttempts >= 3) showStatus("Recuperando la conexión…")
+            p.stop()
+            main.postDelayed({
+                if (player === p && token == playToken) {
+                    p.prepare()
+                    if (pos > 0) p.seekTo(pos)
+                    p.playWhenReady = true
+                }
+            }, 800)
+            return
+        }
+        val ch = channels.getOrNull(current) ?: return
+        // every 3rd failed try, move to the next option of the channel (if it has any)
+        if (recoverAttempts % 3 == 0 && ch.alts.isNotEmpty()) {
+            val base = altOverride ?: altIndex(ch)
+            altOverride = (base + 1) % ch.options.size
+            if (info.visibility == View.VISIBLE) updateInfo()
+        }
+        when {
+            recoverAttempts >= 3 * ch.options.size + 3 ->
+                showStatus("Sin señal en ${ch.name}.\nSigue intentando… o prueba otro canal.")
+            recoverAttempts >= 3 -> showStatus("Recuperando la señal…")
+        }
+        p.stop()   // frees the (single) connection; the last picture stays on screen
+        main.postDelayed({
+            if (player === p && token == playToken && vod == null) {
+                p.setMediaItem(liveItem(ch))
+                p.prepare()
+                p.playWhenReady = true
+            }
+        }, if (recoverAttempts > 6) 4_000L else 800L)
     }
 
     /** Bumped on every new channel/movie so delayed retries of an older one are ignored. */
     private var playToken = 0
-
-    /**
-     * A live stream that stays in "Cargando…" (server not answering, usually because the
-     * previous connection is still counted as open) is reconnected instead of hanging forever.
-     */
-    private val stallWatch: Runnable = object : Runnable {
-        override fun run() {
-            val p = player ?: return
-            if (vod != null || p.playbackState == Player.STATE_READY) return
-            if (retries < 3) {
-                retries++
-                showStatus("Reconectando… ($retries/3)")
-                p.stop()
-                p.prepare()
-                p.playWhenReady = true
-                main.postDelayed(this, 12_000)
-            } else {
-                val ch = channels.getOrNull(current)
-                showStatus("No se pudo reproducir ${ch?.name ?: "el canal"}.\n" +
-                    if (ch != null && ch.alts.isNotEmpty()) "Prueba otra opción del canal (botón ⇄)." else "Prueba otro canal o vuelve a intentar.")
-            }
-        }
-    }
 
     /**
      * ▲▼ zapping: the banner follows each press at once, but the stream only opens when the
@@ -647,27 +717,9 @@ class MainActivity : Activity() {
      */
     private val pendingZap = Runnable { play(current) }
 
-    private fun retry() {
-        val p = player ?: return
-        if (retries < 3) {
-            retries++
-            showStatus("Reconectando… ($retries/3)")
-            val token = playToken
-            main.postDelayed({
-                if (player === p && token == playToken) {
-                    p.prepare()
-                    p.playWhenReady = true
-                }
-            }, 2000L * retries)
-        } else {
-            val name = vod?.title ?: channels.getOrNull(current)?.name ?: "el canal"
-            showStatus("No se pudo reproducir $name.\n" + if (vod != null) "Atrás para volver." else "◀ para ver los canales.")
-        }
-    }
-
     private fun releasePlayer() {
+        main.removeCallbacks(health)
         main.removeCallbacks(vodSaver)
-        main.removeCallbacks(stallWatch)
         main.removeCallbacks(pendingZap)
         player?.release()
         player = null
@@ -675,8 +727,8 @@ class MainActivity : Activity() {
 
     private fun stopPlayback() {
         main.removeCallbacks(vodSaver)
-        main.removeCallbacks(stallWatch)
         main.removeCallbacks(pendingZap)
+        player?.playWhenReady = false   // nothing to watch: the health check leaves it alone
         player?.stop()
         hideStatus()
     }
@@ -692,7 +744,7 @@ class MainActivity : Activity() {
     private fun zap(step: Int) {
         if (channels.isEmpty()) return
         current = neighbor(step)
-        main.removeCallbacks(stallWatch)
+        player?.playWhenReady = false
         player?.stop()                      // drop the old stream right away
         shutter.visibility = View.VISIBLE   // no frozen frame of the old channel
         hideStatus()
@@ -703,7 +755,7 @@ class MainActivity : Activity() {
 
     private fun fitVideo() {
         val w = root.width
-        val h = root.height
+        val h = if (portrait) w * 9 / 16 else root.height
         if (w == 0 || h == 0 || videoW == 0 || videoH == 0) return
         val aspect = when (aspectMode) {
             1 -> 16f / 9f
@@ -718,7 +770,8 @@ class MainActivity : Activity() {
             lp.width = w
             lp.height = (w / aspect).toInt()
         }
-        lp.gravity = Gravity.CENTER
+        lp.gravity = if (portrait) Gravity.TOP or Gravity.CENTER_HORIZONTAL else Gravity.CENTER
+        lp.topMargin = if (portrait) (h - lp.height) / 2 else 0
         surface.layoutParams = lp
         placeSideButtons()
     }
@@ -808,7 +861,7 @@ class MainActivity : Activity() {
     /** Sliders follow the side buttons (shown with them, never while locked). */
     private fun syncSliders() {
         if (!::volSlider.isInitialized) return
-        val show = !isTv && !locked && topButtons.visibility == View.VISIBLE && menuButton.visibility == View.VISIBLE ||
+        val show = !isTv && !portrait && !locked && topButtons.visibility == View.VISIBLE && menuButton.visibility == View.VISIBLE ||
             (!isTv && !locked && vod != null && topButtons.visibility == View.VISIBLE)
         val target = if (show) View.VISIBLE else View.GONE
         if (brightSlider.visibility != target) {
@@ -822,6 +875,140 @@ class MainActivity : Activity() {
         }
     }
 
+
+    // ---------------------------------------------------------------- upright phone layout
+
+    private val gridColumns get() = if (portrait) 3 else 6
+
+    private fun buildPortraitBar() {
+        portraitBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            visibility = View.GONE
+        }
+        fun icon(res: Int, action: () -> Unit) = ImageView(this).apply {
+            setImageResource(res)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(9), dp(9), dp(9), dp(9))
+            background = surfaceBg(0xE60A1E5A.toInt(), 20, 0, 20)
+            isClickable = true
+            setOnClickListener { action() }
+        }
+        fun add(v: View, w: Int = dp(40)) = portraitBar.addView(v, LinearLayout.LayoutParams(w, dp(40)).apply { rightMargin = dp(8) })
+        add(icon(R.drawable.ic_menu) { showPanel() })
+        portraitOption = text(14f, bold = true).apply {
+            setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_swap, 0, 0, 0)
+            compoundDrawablePadding = dp(6)
+            gravity = Gravity.CENTER
+            setPadding(dp(12), 0, dp(14), 0)
+            background = surfaceBg(0xE60A1E5A.toInt(), 20, 0, 20)
+            isClickable = true
+            setOnClickListener { chooseOption() }
+        }
+        add(portraitOption, -2)
+        portraitBar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        portraitCast = icon(R.drawable.ic_cast) { castMenu() }
+        portraitPip = icon(R.drawable.ic_pip) { enterPipNow(onlyIfPlaying = false) }
+        add(portraitCast)
+        add(portraitPip)
+        add(icon(R.drawable.ic_info) { toggleStats() })
+        portraitBar.addView(icon(R.drawable.ic_settings) { openSettings() }, LinearLayout.LayoutParams(dp(40), dp(40)))
+        root.addView(portraitBar, FrameLayout.LayoutParams(-1, dp(52), Gravity.TOP))
+    }
+
+    private fun updatePortraitBar() {
+        if (!::portraitBar.isInitialized) return
+        val ch = channels.getOrNull(current)
+        if (ch == null || ch.alts.isEmpty()) portraitOption.visibility = View.GONE
+        else {
+            portraitOption.text = ch.options[altOverride?.takeIf { it < ch.options.size } ?: altIndex(ch)].label
+            portraitOption.visibility = View.VISIBLE
+        }
+        portraitCast.visibility = if (caster != null) View.VISIBLE else View.GONE
+        portraitPip.visibility = if (pipAllowed && castingTo == null) View.VISIBLE else View.GONE
+    }
+
+    /** The fixed guide below the player follows the channel being watched. */
+    private fun syncPortraitGuide() {
+        if (channels.isEmpty()) return
+        val rows = channels.filter { it.name !in hiddenChannels }.ifEmpty { channels }
+        val currentRow = rows.indexOfFirst { it.number == channels.getOrNull(current)?.number }.coerceAtLeast(0)
+        epgView.setData(rows, currentRow)
+        if (guide.isEmpty()) refreshGuide(false)
+    }
+
+    private fun place(v: View, lp: FrameLayout.LayoutParams) {
+        if (!landscapeParams.containsKey(v)) landscapeParams[v] = FrameLayout.LayoutParams(v.layoutParams as FrameLayout.LayoutParams)
+        v.layoutParams = lp
+    }
+
+    private fun restore(v: View) {
+        landscapeParams[v]?.let { v.layoutParams = FrameLayout.LayoutParams(it) }
+    }
+
+    /** Switches between the sideways (full screen) and upright (player + guide) layouts. */
+    private fun applyLayoutMode() {
+        val w = root.width
+        val h = root.height
+        if (w == 0 || h == 0) return
+        val was = portrait
+        portrait = !isTv && GLASS && h > w && !(Build.VERSION.SDK_INT >= 24 && isInPictureInPictureMode)
+        val area = w * 9 / 16
+        epgView.setCompact(portrait)
+        if (!GLASS) { fitVideo(); return }
+        if (portrait) {
+            hideInfo.run()
+            menuButton.visibility = View.GONE
+            topButtons.visibility = View.GONE
+            place(shutter, FrameLayout.LayoutParams(-1, area, Gravity.TOP))
+            place(card, FrameLayout.LayoutParams(-1, area, Gravity.TOP))
+            place(status, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = area / 2 - dp(32) })
+            place(subtitleText, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = area - dp(64); leftMargin = dp(16); rightMargin = dp(16)
+            })
+            place(statsView, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(8) })
+            place(panel, FrameLayout.LayoutParams(minOf(dp(400), w - dp(36)), -1, Gravity.START).apply { setMargins(dp(10), dp(10), 0, dp(10)) })
+            (portraitBar.layoutParams as FrameLayout.LayoutParams).topMargin = area
+            if (vod == null) {
+                portraitBar.visibility = View.VISIBLE
+                updatePortraitBar()
+                place(epgBox, FrameLayout.LayoutParams(-1, h - area - dp(52), Gravity.TOP).apply {
+                    topMargin = area + dp(52); setMargins(dp(8), area + dp(52), dp(8), dp(8))
+                })
+                epgBox.animate().cancel()
+                epgBox.translationX = 0f
+                epgBox.alpha = 1f
+                epgBox.visibility = View.VISIBLE
+                epgCloseButton.visibility = View.GONE
+                syncPortraitGuide()
+            } else {
+                portraitBar.visibility = View.GONE
+                epgBox.visibility = View.GONE
+                place(vodBar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply { setMargins(dp(10), area + dp(10), dp(10), 0) })
+                vodBar.visibility = View.VISIBLE
+            }
+        } else if (was) {
+            for (v in landscapeParams.keys) restore(v)
+            portraitBar.visibility = View.GONE
+            epgBox.visibility = View.GONE
+            epgCloseButton.visibility = View.VISIBLE
+        }
+        if (!portrait) (epgBox.layoutParams as FrameLayout.LayoutParams).let {
+            val want = (w * 0.72f).toInt()
+            if (it.width != want) { it.width = want; epgBox.layoutParams = it }
+        }
+        if (was != portrait) {
+            if (videoW == 0) {
+                val lp = surface.layoutParams as FrameLayout.LayoutParams
+                lp.width = -1; lp.height = if (portrait) area else -1; lp.gravity = Gravity.TOP; lp.topMargin = 0
+                surface.layoutParams = lp
+            }
+            tileW = 0
+            if (::grid.isInitialized) (grid.adapter as? BaseAdapter)?.notifyDataSetChanged()
+        }
+        fitVideo()
+    }
 
     // ---------------------------------------------------------------- stream info (i)
 
@@ -893,12 +1080,13 @@ class MainActivity : Activity() {
     private fun playVod(w: Watch) {
         val acc = xtream() ?: return
         saveVodProgress()
+        if (portrait) root.post { applyLayoutMode() }
         hideKeyboard()
         browser.visibility = View.GONE
         panel.visibility = View.GONE
         hideInfo.run()
         vod = w
-        retries = 0
+        recoverAttempts = 0
         if (castingTo != null) {
             castMedia()?.let { caster?.send(it) }
             showVodBar()
@@ -918,7 +1106,6 @@ class MainActivity : Activity() {
         p.prepare()
         p.playWhenReady = true
         playToken++
-        main.removeCallbacks(stallWatch)
         subtitleText.text = ""
         subtitleText.visibility = View.GONE
         // Appears in "Seguir viendo" right away, not only after some minutes.
@@ -1001,7 +1188,7 @@ class MainActivity : Activity() {
         override fun run() {
             val p = player
             when {
-                vod == null || vodBar.visibility != View.VISIBLE -> {}
+                vod == null || vodBar.visibility != View.VISIBLE || portrait -> {}
                 p != null && !p.playWhenReady -> {}                       // paused: stays until resumed
                 pickerLayer.visibility == View.VISIBLE -> main.postDelayed(this, 3000)
                 seekDragging -> main.postDelayed(this, 3000)
@@ -1180,7 +1367,7 @@ class MainActivity : Activity() {
     /** Tile and poster size: 6 columns across the width, vertical 2:3 posters. */
     private fun measureTiles() {
         val width = (if (grid.width > 0) grid.width else root.width - dp(48)).coerceAtLeast(dp(300))
-        tileW = width / 6
+        tileW = width / gridColumns
         posterH = (tileW - dp(14)) * 3 / 2
     }
 
@@ -2000,7 +2187,7 @@ class MainActivity : Activity() {
     private fun onBack() {
         when {
             pickerLayer.visibility == View.VISIBLE -> closePicker()
-            epgBox.visibility == View.VISIBLE -> closeEpg()
+            epgBox.visibility == View.VISIBLE && !portrait -> closeEpg()
             filterBox.visibility == View.VISIBLE -> closeFilter()
             account.visibility == View.VISIBLE -> {
                 account.visibility = View.GONE
@@ -2193,7 +2380,7 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- program guide (EPG)
 
     private fun openEpg() {
-        if (channels.isEmpty() || vod != null) return
+        if (channels.isEmpty() || vod != null || portrait) return
         hideInfo.run()
         panel.visibility = View.GONE
         val rows = channels.filter { it.name !in hiddenChannels }.ifEmpty { channels }
@@ -2213,7 +2400,7 @@ class MainActivity : Activity() {
     private var epgClosing = false
 
     private fun closeEpg() {
-        if (epgBox.visibility != View.VISIBLE || epgClosing) return
+        if (epgBox.visibility != View.VISIBLE || epgClosing || portrait) return
         epgClosing = true
         root.requestFocus()
         epgBox.animate().cancel()
@@ -2291,7 +2478,7 @@ class MainActivity : Activity() {
 
     /** Cast + picture-in-picture buttons (top right), only on phones/tablets. */
     private fun showTopButtons() {
-        if (isTv) return
+        if (isTv || portrait) return
         castButton.visibility = if (caster != null && !locked) View.VISIBLE else View.GONE
         pipButton.visibility = if (pipAllowed && castingTo == null && !locked) View.VISIBLE else View.GONE
         infoButton.visibility = if (castingTo == null && !locked) View.VISIBLE else View.GONE
@@ -2304,6 +2491,7 @@ class MainActivity : Activity() {
 
     private fun showInfo(touch: Boolean) {
         if (channels.isEmpty()) return
+        if (portrait) { updatePortraitBar(); return }   // the guide below shows the programme
         updateInfo()
         info.visibility = View.VISIBLE
         if (touch) {
@@ -2332,7 +2520,7 @@ class MainActivity : Activity() {
         infoNext.visibility = if (next == null) View.GONE else View.VISIBLE
         if (ch.alts.isEmpty()) infoOptions.visibility = View.GONE
         else {
-            val label = ch.options[altIndex(ch)].label
+            val label = ch.options[altOverride?.takeIf { it < ch.options.size } ?: altIndex(ch)].label
             infoOptions.text = if (isTv) "$label  ·  mantén OK" else label
             infoOptions.visibility = View.VISIBLE
         }
@@ -2719,6 +2907,7 @@ class MainActivity : Activity() {
         root.addView(statsView, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
             topMargin = dp(14)
         })
+        if (GLASS) buildPortraitBar()
 
         // Bottom bar (movies / series)
         vodBar = LinearLayout(this).apply {
@@ -3057,7 +3246,7 @@ class MainActivity : Activity() {
         epgInfo.addView(epgDesc)
         epgHead.addView(epgInfo, LinearLayout.LayoutParams(0, -2, 1f))
         epgHead.setOnTouchListener { _, e -> epgDrag(e); true }
-        epgHead.addView(text(16f, bold = true).apply {
+        epgCloseButton = text(16f, bold = true).apply {
             this.text = "Cerrar"
             gravity = Gravity.CENTER
             setPadding(dp(18), dp(8), dp(18), dp(8))
@@ -3065,7 +3254,8 @@ class MainActivity : Activity() {
             isClickable = true
             isFocusable = false
             setOnClickListener { closeEpg() }
-        }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(12) })
+        }
+        epgHead.addView(epgCloseButton, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(12) })
         epgBox.addView(epgHead, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         epgView = EpgView(this, epgHost).apply {
             isFocusable = true
@@ -3080,10 +3270,9 @@ class MainActivity : Activity() {
             (epgBox.layoutParams as FrameLayout.LayoutParams).width = (root.width * 0.72f).toInt()
             epgBox.requestLayout()
         }
-        root.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
-            if (right - left != oldRight - oldLeft) {
-                (epgBox.layoutParams as FrameLayout.LayoutParams).width = ((right - left) * 0.72f).toInt()
-                epgBox.requestLayout()
+        root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+                root.post { applyLayoutMode() }
             }
         }
 
@@ -3329,20 +3518,21 @@ class MainActivity : Activity() {
 
     /** Each list row holds 6 poster tiles. */
     private inner class GridRowAdapter : BaseAdapter() {
-        override fun getCount() = (items.size + 5) / 6
+        override fun getCount() = (items.size + gridColumns - 1) / gridColumns
         override fun getItem(position: Int): Any? = null
         override fun getItemId(position: Int) = position.toLong()
 
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
             if (tileW == 0) measureTiles()
-            val row = (convertView as? LinearLayout)?.takeIf { it.tag == posterH } ?: LinearLayout(this@MainActivity).apply {
+            val cols = gridColumns
+            val row = (convertView as? LinearLayout)?.takeIf { it.tag == posterH * 10 + cols } ?: LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
-                tag = posterH
-                repeat(6) { addView(makeTile(), LinearLayout.LayoutParams(tileW, -2)) }
+                tag = posterH * 10 + cols
+                repeat(cols) { addView(makeTile(), LinearLayout.LayoutParams(tileW, -2)) }
             }
-            for (i in 0 until 6) {
+            for (i in 0 until cols) {
                 val tile = row.getChildAt(i) as LinearLayout
-                val item = items.getOrNull(position * 6 + i)
+                val item = items.getOrNull(position * cols + i)
                 if (item == null) {
                     tile.visibility = View.INVISIBLE
                     tile.setOnClickListener(null)

@@ -41,7 +41,13 @@ class EpgView(context: Context, private val host: Host) : View(context) {
 
     private val rulerH = dp(30f)
     private val rowH = dp(54f)
-    private val chanW = dp(210f)
+    private var chanW = dp(210f)
+
+    /** Narrower channel column (phone held upright). */
+    fun setCompact(compact: Boolean) {
+        val w = dp(if (compact) 150f else 210f)
+        if (w != chanW) { chanW = w; invalidate() }
+    }
     private val pxPerMin = dp(4.4f)
     private val gap = dp(2f)
     private val radius = dp(6f)
