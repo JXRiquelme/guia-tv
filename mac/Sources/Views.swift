@@ -96,13 +96,21 @@ struct RootView: View {
 
                 if app.vod == nil && app.showInfo && !app.mini { InfoBanner().frame(maxHeight: .infinity, alignment: .bottom).transition(.opacity) }
                 if app.vod != nil && (app.showVodBar || mpv.paused) && !app.mini {
-                    VodBar().frame(maxHeight: .infinity, alignment: .bottom).transition(.move(edge: .bottom).combined(with: .opacity))
+                    VodOverlay().transition(.opacity)
+                }
+                if app.showStats && !app.statsText.isEmpty && !app.mini {
+                    Text(app.statsText).font(.system(size: 13, weight: .semibold)).monospacedDigit().foregroundColor(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .glass(Capsule(), dark: 0.35)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .padding(.top, app.vod != nil ? 92 : 22)
+                        .allowsHitTesting(false)
                 }
                 if let s = app.status {
                     Text(s).font(.system(size: 20)).multilineTextAlignment(.center).foregroundColor(.white)
                         .padding(.horizontal, 24).padding(.vertical, 14)
                         .background(Color.black.opacity(0.8)).cornerRadius(12)
-                        .offset(y: app.vod != nil ? -geo.size.height * 0.22 : 0)
+                        .offset(y: app.vod != nil ? -130 : 0)
                         .allowsHitTesting(false)
                 }
                 if !app.digits.isEmpty {
@@ -110,7 +118,7 @@ struct RootView: View {
                         .padding(.horizontal, 18).padding(.vertical, 6).background(Color.black.opacity(0.8)).cornerRadius(10)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(30)
                 }
-                if app.showTopButtons && !app.mini {
+                if app.showTopButtons && !app.mini && app.vod == nil {
                     TopButtons().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).transition(.opacity)
                 }
                 if app.showPanel {
@@ -135,6 +143,7 @@ struct RootView: View {
             .animation(.easeOut(duration: 0.2), value: app.browserOpen)
             .animation(.easeOut(duration: 0.18), value: app.showInfo)
             .animation(.easeOut(duration: 0.18), value: app.showTopButtons)
+            .animation(.easeOut(duration: 0.22), value: app.showVodBar)
         }
         .clipped()
         .background(Color.black)
@@ -895,10 +904,11 @@ struct Scrubber: View {
         GeometryReader { g in
             let frac = duration > 0 ? max(0, min(1, position / duration)) : 0
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.25)).frame(height: 6)
-                Capsule().fill(Color.yellow).frame(width: g.size.width * frac, height: 6)
-                Circle().fill(Color.white).frame(width: 16, height: 16)
-                    .offset(x: g.size.width * frac - 8)
+                Capsule().fill(Color.white.opacity(0.3)).frame(height: 4)
+                Capsule().fill(Color.white).frame(width: g.size.width * frac, height: 4)
+                Circle().fill(Color.white).frame(width: 13, height: 13)
+                    .shadow(color: .black.opacity(0.4), radius: 3)
+                    .offset(x: g.size.width * frac - 6.5)
             }
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
@@ -979,6 +989,11 @@ struct TopButtons: View {
                 Image(systemName: "pip.enter").font(.system(size: 18, weight: .semibold)).foregroundColor(.white)
                     .frame(width: 46, height: 46).glass(Circle())
             }.buttonStyle(.plain)
+            Button { app.showStats.toggle() } label: {
+                Image(systemName: "info.circle").font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(app.showStats ? Theme.accent : .white)
+                    .frame(width: 46, height: 46).glass(Circle())
+            }.buttonStyle(.plain).help("Resolución y fps")
         }
         .padding(.horizontal, 32).padding(.top, 40)
     }
@@ -1039,5 +1054,172 @@ struct SettingsView: View {
             .padding(26).frame(width: 500)
             .glass(26, dark: 0.45)
         }
+    }
+}
+
+
+// MARK: - Movies / series player (Apple TV style)
+
+/// Buttons that sink when pressed and spring back.
+struct PressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.82 : 1)
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .animation(.spring(response: 0.28, dampingFraction: 0.5), value: configuration.isPressed)
+    }
+}
+
+struct VodOverlay: View {
+    @EnvironmentObject var app: AppModel
+    @ObservedObject var mpv = MPV.shared
+    @State private var scrub: Double?
+    @State private var spinBack = 0.0
+    @State private var spinFwd = 0.0
+    @State private var floatBack = false
+    @State private var floatFwd = false
+    @State private var playScale = 1.0
+
+    var body: some View {
+        if let w = app.vod {
+            ZStack {
+                // dark fade at the top and bottom so the white controls read well
+                LinearGradient(stops: [
+                    .init(color: .black.opacity(0.65), location: 0),
+                    .init(color: .clear, location: 0.22),
+                    .init(color: .clear, location: 0.62),
+                    .init(color: .black.opacity(0.85), location: 1),
+                ], startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+
+                // centre: ⟲10  ▶/❚❚  ⟳10
+                HStack(spacing: 72) {
+                    seekButton(back: true)
+                    Button {
+                        withAnimation(.easeIn(duration: 0.1)) { playScale = 0.6 }
+                        app.togglePause()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.5)) { playScale = 1 }
+                        }
+                    } label: {
+                        Image(systemName: mpv.paused ? "play.fill" : "pause.fill")
+                            .font(.system(size: 52, weight: .regular))
+                            .contentTransition(.symbolEffect(.replace))
+                            .frame(width: 86, height: 86).contentShape(Rectangle())
+                    }
+                    .buttonStyle(PressStyle()).scaleEffect(playScale)
+                    seekButton(back: false)
+                }
+
+                // top: volume on the left; AirPlay, picture in picture, info and close on the right
+                VStack {
+                    HStack(spacing: 22) {
+                        Image(systemName: app.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill").font(.system(size: 15))
+                        Slider(value: $app.volume, in: 0...100, onEditingChanged: { editing in app.scrubbing = editing; app.flashVodBar() })
+                            .tint(.white).frame(width: 130).controlSize(.small)
+                        Spacer()
+                        if let p = app.airplayPlayer {
+                            AirPlayButton(player: p).frame(width: 24, height: 24)
+                        }
+                        topIcon("pip.enter") { app.togglePiP() }
+                        topIcon("info.circle", active: app.showStats) { app.showStats.toggle() }
+                        topIcon("xmark") { app.leaveVod() }
+                    }
+                    .padding(.horizontal, 36).padding(.top, 34)
+                    Spacer()
+                }
+
+                // bottom: small line + bold title, icons on the right, thin timeline, times
+                VStack(alignment: .leading, spacing: 10) {
+                    Spacer()
+                    HStack(alignment: .bottom, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            if !w.subtitle.isEmpty {
+                                Text(w.subtitle).font(.system(size: 13, weight: .medium)).foregroundColor(Theme.muted).lineLimit(1)
+                            }
+                            Text(w.title).font(.system(size: 24, weight: .bold)).lineLimit(1)
+                        }
+                        Spacer()
+                        Menu {
+                            let tracks = mpv.tracks("sub")
+                            Button((tracks.contains { $0.selected } ? "○ " : "● ") + "Desactivados") { mpv.selectSubtitle(nil) }
+                            ForEach(tracks) { t in Button((t.selected ? "● " : "○ ") + t.title) { mpv.selectSubtitle(t.id) } }
+                        } label: { menuIcon("captions.bubble") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Subtítulos")
+                        Menu {
+                            let tracks = mpv.tracks("audio")
+                            if tracks.isEmpty { Text("Sin pistas") }
+                            ForEach(tracks) { t in Button((t.selected ? "● " : "○ ") + t.title) { mpv.selectAudio(t.id) } }
+                        } label: { menuIcon("waveform") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Audio")
+                        Menu {
+                            ForEach([("Normal", "no"), ("16:9", "16:9"), ("4:3", "4:3")], id: \.1) { name, v in
+                                Button((app.aspect == v ? "● " : "○ ") + name) { app.setAspect(v) }
+                            }
+                        } label: { menuIcon("aspectratio") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Formato de pantalla")
+                    }
+                    Scrubber(position: scrub ?? mpv.position, duration: mpv.duration) { value, done in
+                        scrub = value
+                        app.scrubbing = !done
+                        if done {
+                            mpv.command(["seek", String(value), "absolute"])
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { scrub = nil }
+                        }
+                        app.flashVodBar()
+                    }
+                    HStack {
+                        Text(app.clock(scrub ?? mpv.position))
+                        Spacer()
+                        if mpv.duration > 0 { Text("−" + app.clock(max(0, mpv.duration - (scrub ?? mpv.position)))) }
+                    }
+                    .font(.system(size: 13, weight: .medium)).monospacedDigit().foregroundColor(Theme.muted)
+                }
+                .padding(.horizontal, 40).padding(.bottom, 26)
+            }
+            .foregroundColor(.white)
+        }
+    }
+
+    private func seekButton(back: Bool) -> some View {
+        Button {
+            app.seek(back ? -10 : 10)
+            withAnimation(.easeOut(duration: 0.12)) { if back { spinBack = -45 } else { spinFwd = 45 } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.5)) { if back { spinBack = 0 } else { spinFwd = 0 } }
+            }
+            // "−10 s" / "+10 s" floats up and fades
+            if back { floatBack = false } else { floatFwd = false }
+            DispatchQueue.main.async {
+                withAnimation(.easeOut(duration: 0.7)) { if back { floatBack = true } else { floatFwd = true } }
+            }
+        } label: {
+            Image(systemName: back ? "gobackward.10" : "goforward.10")
+                .font(.system(size: 34, weight: .regular))
+                .rotationEffect(.degrees(back ? spinBack : spinFwd))
+                .frame(width: 64, height: 64).contentShape(Rectangle())
+                .overlay(alignment: .top) {
+                    let on = back ? floatBack : floatFwd
+                    Text(back ? "−10 s" : "+10 s").font(.system(size: 14, weight: .bold))
+                        .offset(y: on ? -34 : -12)
+                        .opacity(on ? 0 : (back ? (spinBack == 0 ? 0 : 1) : (spinFwd == 0 ? 0 : 1)))
+                        .allowsHitTesting(false)
+                }
+        }
+        .buttonStyle(PressStyle())
+    }
+
+    private func topIcon(_ name: String, active: Bool = false, _ action: @escaping () -> Void) -> some View {
+        Button { action(); app.flashVodBar() } label: {
+            Image(systemName: name).font(.system(size: 18, weight: .medium))
+                .foregroundColor(active ? Theme.accent : .white)
+                .frame(width: 30, height: 30).contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
+    }
+
+    private func menuIcon(_ name: String) -> some View {
+        Image(systemName: name).font(.system(size: 19, weight: .medium)).foregroundColor(.white)
+            .frame(width: 30, height: 30)
     }
 }

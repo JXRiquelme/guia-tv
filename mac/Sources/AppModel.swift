@@ -61,6 +61,14 @@ final class AppModel: ObservableObject {
     @Published var dragTarget: Int?
     @Published var cardChannel: Int?
     @Published var showTopButtons = false
+    /// (i): resolution · fps over the picture
+    @Published var showStats = UserDefaults.standard.bool(forKey: "show_stats") {
+        didSet { UserDefaults.standard.set(showStats, forKey: "show_stats"); updateStats() }
+    }
+    @Published var statsText = ""
+    @Published var volume: Double = 100 { didSet { mpv.setProperty("volume", String(Int(volume))) } }
+    /// Option tried automatically when the chosen one stops working (not saved).
+    @Published var altOverride: Int?
     @Published var showSettings = false
     @Published var audioLang = UserDefaults.standard.string(forKey: "audio_lang") ?? "es" {
         didSet { UserDefaults.standard.set(audioLang, forKey: "audio_lang"); applyLanguages() }
@@ -110,11 +118,9 @@ final class AppModel: ObservableObject {
     private var catalogCache: [Bool: [VodItem]] = [:]
     private var loadToken = 0
     private var playToken = 0
-    private var retries = 0
     private var infoTimer: Timer?
     private var vodBarTimer: Timer?
     private var zapTimer: Timer?
-    private var stallTimer: Timer?
     private var saveTimer: Timer?
     private var clockTimer: Timer?
     private var keyMonitor: Any?
@@ -255,13 +261,15 @@ final class AppModel: ObservableObject {
         aspect = "no"
         mpv.setAspect("no")
         current = max(0, min(index, channels.count - 1))
-        retries = 0
+        recoverAttempts = 0
+        stallSince = nil
+        altOverride = nil
         playToken += 1
         status = nil
         applyLanguages()
         UserDefaults.standard.set(channels[current].name, forKey: "last_channel")
-        mpv.load(streamURL(channels[current]))
-        armStallWatch()
+        mpv.load(liveURL())
+        startHealth()
         flashInfo()
     }
 
@@ -292,27 +300,90 @@ final class AppModel: ObservableObject {
 
     func applyLanguages() { mpv.applyLanguages(audio: audioLang, subtitles: subLang) }
 
-    private func armStallWatch() {
-        stallTimer?.invalidate()
+    func liveURL() -> String {
+        guard let ch = currentChannel else { return "" }
+        if let o = altOverride, ch.options.indices.contains(o) { return ch.options[o].url }
+        return streamURL(ch)
+    }
+
+    // MARK: - Self-healing playback
+    // Checked every second: if the picture is stuck (buffering / not moving) for a few seconds,
+    // the stream is reopened quietly; every 3rd try a live channel moves to its next option.
+    // It never gives up while you stay, and only says something if it takes long.
+
+    private var healthTimer: Timer?
+    private var stallSince: Date?
+    private var lastPos: Double = -1
+    private var recoverAttempts = 0
+    private var recovering = false
+
+    private func startHealth() {
+        lastPos = -1
+        guard healthTimer == nil else { return }
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.healthTick() }
+    }
+
+    private func healthTick() {
+        updateStats()
+        guard !airplayActive, !recovering, !showSetup, vod != nil || currentChannel != nil, !mpv.paused, !browserOpen || vod != nil else {
+            stallSince = nil; return
+        }
+        let pos = mpv.position
+        let moving = abs(pos - lastPos) > 0.05
+        lastPos = pos
+        if moving && !mpv.buffering { stallSince = nil; return }
+        let now = Date()
+        if stallSince == nil { stallSince = now }
+        let limit: Double = recoverAttempts == 0 ? (vod != nil ? 8 : 10) : 6
+        if now.timeIntervalSince(stallSince!) >= limit { recover() }
+    }
+
+    private func recover() {
+        recoverAttempts += 1
+        stallSince = Date()
+        recovering = true
         let token = playToken
-        stallTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: false) { [weak self] _ in
-            guard let self = self, token == self.playToken, self.vod == nil, self.mpv.buffering || self.mpv.position == 0 else { return }
-            if self.retries < 3 {
-                self.retries += 1
-                self.status = "Reconectando… (\(self.retries)/3)"
-                if let ch = self.currentChannel { self.mpv.load(self.streamURL(ch)) }
-                self.armStallWatch()
-            } else {
-                let hasAlts = !(self.currentChannel?.alts.isEmpty ?? true)
-                self.status = "No se pudo reproducir \(self.currentChannel?.name ?? "el canal").\n" +
-                    (hasAlts ? "Prueba otra opción del canal (botón ⇄ o tecla O)." : "Prueba otro canal.")
+        if let w = vod, let acc = xtream() {
+            let pos = mpv.position > 1 ? mpv.position : w.position
+            if recoverAttempts >= 2 { status = "Recuperando la conexión…" }
+            mpv.stop()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self = self, token == self.playToken else { return }
+                self.recovering = false
+                self.mpv.load(w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext), start: pos)
             }
+            return
+        }
+        guard let ch = currentChannel else { recovering = false; return }
+        if recoverAttempts % 3 == 0 && !ch.alts.isEmpty {
+            altOverride = ((altOverride ?? altIndex(ch)) + 1) % ch.options.count
+        }
+        if recoverAttempts >= 3 * ch.options.count + 3 {
+            status = "Sin señal en \(ch.name).\nSigue intentando… o prueba otro canal."
+        } else if recoverAttempts >= 3 {
+            status = "Recuperando la señal…"
+        }
+        mpv.stop()   // frees the (single) connection
+        DispatchQueue.main.asyncAfter(deadline: .now() + (recoverAttempts > 6 ? 4 : 0.8)) { [weak self] in
+            guard let self = self, token == self.playToken, self.vod == nil else { return }
+            self.recovering = false
+            self.mpv.load(self.liveURL())
         }
     }
 
+    func updateStats() {
+        guard showStats else { if !statsText.isEmpty { statsText = "" }; return }
+        let w = Int(mpv.getString("video-params/w") ?? "") ?? 0
+        let h = Int(mpv.getString("video-params/h") ?? "") ?? 0
+        guard w > 0, h > 0 else { statsText = "Sin video"; return }
+        let fps = Double(mpv.getString("estimated-vf-fps") ?? "") ?? Double(mpv.getString("container-fps") ?? "") ?? 0
+        let label = h >= 2000 ? "4K" : h >= 1000 ? "1080p" : h >= 700 ? "720p" : "\(h)p"
+        statsText = "\(label)  ·  \(w)×\(h)" + (fps > 0 ? "  ·  \(Int(fps.rounded())) fps" : "")
+    }
+
     private func playbackReady() {
-        stallTimer?.invalidate()
-        retries = 0
+        recoverAttempts = 0
+        stallSince = nil
         status = nil
         shutter = false
         if cardChannel != nil { withAnimation(.easeOut(duration: 0.25)) { cardChannel = nil } }
@@ -331,29 +402,10 @@ final class AppModel: ObservableObject {
                     leaveVod()
                 }
             } else if error {
-                retryCurrent()
+                if !recovering { recover() }
             }
-        } else if error || eof {
-            retryCurrent()
-        }
-    }
-
-    private func retryCurrent() {
-        let token = playToken
-        guard retries < 3 else {
-            status = "No se pudo reproducir \(vod?.title ?? currentChannel?.name ?? "el canal").\n" +
-                (vod != nil ? "Esc para volver." : "Prueba otro canal.")
-            return
-        }
-        retries += 1
-        status = "Reconectando… (\(retries)/3)"
-        DispatchQueue.main.asyncAfter(deadline: .now() + Double(retries) * 2) { [weak self] in
-            guard let self = self, token == self.playToken else { return }
-            if let w = self.vod, let acc = self.xtream() {
-                self.mpv.load(w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext), start: self.mpv.position)
-            } else if let ch = self.currentChannel {
-                self.mpv.load(self.streamURL(ch))
-            }
+        } else if (error || eof) && !recovering {
+            recover()
         }
     }
 
@@ -368,7 +420,6 @@ final class AppModel: ObservableObject {
     func zap(_ step: Int) {
         guard !channels.isEmpty, vod == nil else { return }
         current = neighbor(step)
-        stallTimer?.invalidate()
         mpv.stop()
         shutter = true
         status = nil
@@ -546,15 +597,16 @@ final class AppModel: ObservableObject {
         guard let acc = xtream() else { return }
         saveVodProgress()
         zapTimer?.invalidate()
-        stallTimer?.invalidate()
         browserOpen = false
         showPanel = false
         showInfo = false
         shutter = true
         aspect = "no"
         mpv.setAspect("no")
-        retries = 0
+        recoverAttempts = 0
+        stallSince = nil
         playToken += 1
+        let token = playToken
         let saved = history.first { $0.id == w.id }
         let resume = (saved.map { !$0.finished && $0.position > 10 } ?? false) ? saved!.position : 0
         var entry = w
@@ -564,7 +616,16 @@ final class AppModel: ObservableObject {
         recordHistory(entry)
         status = resume > 0 ? "Cargando…\nContinuando desde \(clock(resume))" : nil
         applyLanguages()
-        mpv.load(w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext), start: resume)
+        // one connection at a time: close what was playing, then open straight at the resume point
+        let url = w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext)
+        mpv.stop()
+        recovering = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self = self, token == self.playToken else { return }
+            self.recovering = false
+            self.mpv.load(url, start: resume)
+        }
+        startHealth()
         flashVodBar()
         prepareAirPlay()
         saveTimer?.invalidate()
@@ -654,7 +715,6 @@ final class AppModel: ObservableObject {
         showInfo = false
         showEPG = false
         zapTimer?.invalidate()
-        stallTimer?.invalidate()
         mpv.stop()
         if browserSeries != series {
             browserSeries = series
@@ -965,8 +1025,8 @@ final class AppModel: ObservableObject {
         if vod != nil {
             switch code {
             case space, enter: togglePause()
-            case left: seek(-15)
-            case right: seek(15)
+            case left: seek(-10)
+            case right: seek(10)
             case up, down: flashVodBar()
             default: return false
             }
@@ -1086,7 +1146,7 @@ final class AppModel: ObservableObject {
             case .closeEPG:
                 if g.dx > epgWidth * 0.25 || (flick && fx > 0) { closeEPG() } else { openEPG() }
             case .seek:
-                if abs(g.dx) > 60 { seek(g.dx > 0 ? 30 : -30) }
+                if abs(g.dx) > 60 { seek(g.dx > 0 ? 10 : -10) }
             case .zap:
                 endDrag(g.dy)
             case .pass, .none:
