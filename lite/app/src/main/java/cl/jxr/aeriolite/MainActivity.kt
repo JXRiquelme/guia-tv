@@ -885,6 +885,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(10), dp(6), dp(10), dp(6))
+            isClickable = true
             visibility = View.GONE
         }
         fun icon(res: Int, action: () -> Unit) = ImageView(this).apply {
@@ -2686,7 +2687,7 @@ class MainActivity : Activity() {
     /** Blurs the video while a panel, the guide or a menu is open (like ColorOS / iOS). */
     private fun updateBackdrop() {
         if (!GLASS || Build.VERSION.SDK_INT < 31 || !::surface.isInitialized) return
-        val want = !(Build.VERSION.SDK_INT >= 24 && isInPictureInPictureMode) && (panel.visibility == View.VISIBLE || epgBox.visibility == View.VISIBLE ||
+        val want = !(Build.VERSION.SDK_INT >= 24 && isInPictureInPictureMode) && (panel.visibility == View.VISIBLE || (epgBox.visibility == View.VISIBLE && !portrait) ||
             pickerLayer.visibility == View.VISIBLE || filterBox.visibility == View.VISIBLE ||
             setup.visibility == View.VISIBLE || account.visibility == View.VISIBLE)
         if (want == blurred) return
