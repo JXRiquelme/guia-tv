@@ -22,6 +22,7 @@ import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
@@ -177,6 +178,8 @@ class MainActivity : Activity() {
     private lateinit var vodProgress: SeekBar
     private var seekDragging = false
     private lateinit var topButtons: LinearLayout
+    private lateinit var infoButton: ImageView
+    private lateinit var statsView: TextView
     private lateinit var castButton: ImageView
     private lateinit var pipButton: ImageView
     private val isTv by lazy { BuildConfig.TV || packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
@@ -278,6 +281,7 @@ class MainActivity : Activity() {
         hiddenMovieCats = HashSet(prefs.getStringSet("hide_vod", emptySet()) ?: emptySet())
         hiddenSeriesCats = HashSet(prefs.getStringSet("hide_series", emptySet()) ?: emptySet())
         buildUi()
+        if (!isTv && prefs.getBoolean("show_stats", false)) toggleStats()
         val url = prefs.getString("list", "").orEmpty()
         if (url.isEmpty()) showSetup(null) else start()
         main.postDelayed(ticker, 30_000)
@@ -336,6 +340,9 @@ class MainActivity : Activity() {
             pickerLayer.visibility = View.GONE
             card.visibility = View.GONE
             numberView.visibility = View.GONE
+            statsView.visibility = View.GONE
+        } else if (!isTv && prefs.getBoolean("show_stats", false)) {
+            statsView.visibility = View.VISIBLE
         }
     }
 
@@ -584,6 +591,8 @@ class MainActivity : Activity() {
         }
         val ch = channels[current]
         if (!BuildConfig.TV) prefs.edit().putString("last_channel", ch.name).apply()
+        measuredFps = 0f
+        lastFrames = -1
         val url = streamUrl(ch)
         val item = MediaItem.Builder().setUri(url)
         if (url.contains(".m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
@@ -703,6 +712,74 @@ class MainActivity : Activity() {
         }
         lp.gravity = Gravity.CENTER
         surface.layoutParams = lp
+        placeSideButtons()
+    }
+
+    /** Side buttons sit in the middle of the black bars beside the picture (or near the edge if there are none). */
+    private fun placeSideButtons() {
+        if (isTv || !::topButtons.isInitialized) return
+        val w = root.width
+        val vw = (surface.layoutParams as FrameLayout.LayoutParams).width
+        val bar = if (w > 0 && vw in 1 until w) (w - vw) / 2 else 0
+        val button = dp(48)
+        val margin = if (bar >= button + dp(12)) (bar - button) / 2 else dp(20)
+        (menuButton.layoutParams as FrameLayout.LayoutParams).let { if (it.leftMargin != margin) { it.leftMargin = margin; menuButton.layoutParams = it } }
+        (topButtons.layoutParams as FrameLayout.LayoutParams).let { if (it.rightMargin != margin) { it.rightMargin = margin; topButtons.layoutParams = it } }
+    }
+
+    // ---------------------------------------------------------------- stream info (i)
+
+    private var lastFrames = -1
+    private var lastFramesAt = 0L
+    private var measuredFps = 0f
+
+    private fun toggleStats() {
+        val on = statsView.visibility != View.VISIBLE
+        prefs.edit().putBoolean("show_stats", on).apply()
+        infoButton.setColorFilter(if (on) ACCENT else Color.WHITE)
+        lastFrames = -1
+        main.removeCallbacks(statsTick)
+        if (on) { statsView.text = "…"; statsView.visibility = View.VISIBLE; statsTick.run() }
+        else statsView.visibility = View.GONE
+    }
+
+    private val statsTick = object : Runnable {
+        override fun run() {
+            val p = player
+            val f = p?.videoFormat
+            if (p != null && f != null && f.width > 0) {
+                // Frames really shown per second (the stream's declared rate is often missing in TV streams)
+                val counters = p.videoDecoderCounters
+                val now = SystemClock.elapsedRealtime()
+                if (counters != null) {
+                    counters.ensureUpdated()
+                    val frames = counters.renderedOutputBufferCount
+                    if (lastFrames >= 0 && now > lastFramesAt && frames >= lastFrames) {
+                        val fps = (frames - lastFrames) * 1000f / (now - lastFramesAt)
+                        measuredFps = if (measuredFps == 0f) fps else measuredFps * 0.6f + fps * 0.4f
+                    }
+                    lastFrames = frames
+                    lastFramesAt = now
+                }
+                val fps = when {
+                    measuredFps > 1f -> measuredFps
+                    f.frameRate > 0f -> f.frameRate
+                    else -> 0f
+                }
+                val label = when {
+                    f.height >= 2000 -> "4K"
+                    f.height >= 1000 -> "1080p"
+                    f.height >= 700 -> "720p"
+                    else -> "${f.height}p"
+                }
+                statsView.text = "$label  ·  ${f.width}×${f.height}" + if (fps > 0f) "  ·  ${"%.0f".format(Locale.US, fps)} fps" else ""
+            } else {
+                statsView.text = "Sin video"
+                measuredFps = 0f
+                lastFrames = -1
+            }
+            main.postDelayed(this, 1000)
+        }
     }
 
     // ---------------------------------------------------------------- movies & series playback
@@ -2113,7 +2190,12 @@ class MainActivity : Activity() {
         if (isTv) return
         castButton.visibility = if (caster != null) View.VISIBLE else View.GONE
         pipButton.visibility = if (pipAllowed && castingTo == null) View.VISIBLE else View.GONE
-        topButtons.visibility = if (castButton.visibility == View.VISIBLE || pipButton.visibility == View.VISIBLE) View.VISIBLE else View.GONE
+        infoButton.visibility = if (castingTo == null) View.VISIBLE else View.GONE
+        (castButton.layoutParams as LinearLayout.LayoutParams).bottomMargin =
+            if (pipButton.visibility == View.VISIBLE || infoButton.visibility == View.VISIBLE) dp(12) else 0
+        (pipButton.layoutParams as LinearLayout.LayoutParams).bottomMargin = if (infoButton.visibility == View.VISIBLE) dp(12) else 0
+        topButtons.visibility = View.VISIBLE
+        placeSideButtons()
         castButton.alpha = if (castingTo != null) 1f else 0.9f
         castButton.setColorFilter(if (castingTo != null) ACCENT else Color.WHITE)
     }
@@ -2487,21 +2569,34 @@ class MainActivity : Activity() {
 
         // Round icon button (touch) that opens the side panel (channels, movies, series)
         menuButton = roundButton(R.drawable.ic_menu) { showPanel() }.apply { visibility = View.GONE }
-        root.addView(menuButton, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.START).apply {
-            topMargin = dp(24); leftMargin = dp(32)
+        root.addView(menuButton, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER_VERTICAL or Gravity.START).apply {
+            leftMargin = dp(24)
         })
 
         // Cast + PiP (phones/tablets only)
+        // Right side, one column centred in the black bar: cast, picture in picture, stream info
         topButtons = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
         castButton = roundButton(R.drawable.ic_cast) { castMenu() }
         pipButton = roundButton(R.drawable.ic_pip) { enterPipNow(onlyIfPlaying = false) }
-        topButtons.addView(castButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { rightMargin = dp(10) })
-        topButtons.addView(pipButton, LinearLayout.LayoutParams(dp(48), dp(48)))
-        root.addView(topButtons, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
-            topMargin = dp(24); rightMargin = dp(32)
+        infoButton = roundButton(R.drawable.ic_info) { toggleStats() }
+        topButtons.addView(castButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { bottomMargin = dp(12) })
+        topButtons.addView(pipButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { bottomMargin = dp(12) })
+        topButtons.addView(infoButton, LinearLayout.LayoutParams(dp(48), dp(48)))
+        root.addView(topButtons, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_VERTICAL or Gravity.END).apply {
+            rightMargin = dp(24)
+        })
+
+        // Minimal stream info (resolution · fps) over the video, toggled with (i)
+        statsView = text(13f, bold = true).apply {
+            setPadding(dp(12), dp(5), dp(12), dp(5))
+            glassy(0xB3000000.toInt(), 14)
+            visibility = View.GONE
+        }
+        root.addView(statsView, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = dp(14)
         })
 
         // Bottom bar (movies / series)
