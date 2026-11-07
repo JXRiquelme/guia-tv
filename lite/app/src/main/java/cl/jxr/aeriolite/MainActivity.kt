@@ -792,6 +792,21 @@ class MainActivity : Activity() {
         val column = dp(SIDE_TOP) + 4 * button + 4 * dp(10)
         val top = maxOf(h / 2, column + dp(6))
         val height = (h - top - dp(20)).coerceAtLeast(dp(90))
+        // movie bar: same height as the sliders, between them, with the same gap on each side
+        if (!portrait) {
+            val side = margin + button + dp(12)
+            val lp = vodBar.layoutParams as FrameLayout.LayoutParams
+            if (lp.topMargin != top || lp.height != height || lp.leftMargin != side || lp.gravity != (Gravity.TOP or Gravity.START)) {
+                lp.gravity = Gravity.TOP or Gravity.START
+                lp.width = -1
+                lp.height = height
+                lp.topMargin = top
+                lp.bottomMargin = 0
+                lp.leftMargin = side
+                lp.rightMargin = side
+                vodBar.layoutParams = lp
+            }
+        }
         for ((v, left) in listOf(brightSlider to true, volSlider to false)) {
             val lp = v.layoutParams as FrameLayout.LayoutParams
             if (lp.topMargin != top || lp.height != height || (if (left) lp.leftMargin else lp.rightMargin) != margin) {
@@ -2273,10 +2288,22 @@ class MainActivity : Activity() {
                         hideInfo.run()
                     } else if (vod != null && abs(dx) > slop * 2 && abs(dx) > abs(dy) * 1.3f) {
                         dragging = true
+                    } else if (vod != null && !isTv && abs(dy) > slop * 2 && abs(dy) > abs(dx) * 1.3f) {
+                        // movies/series: left half = brightness, right half = volume
+                        dragging = true
+                        adjust = if (downX < root.width / 2f) 1 else 2
+                        adjustStart = if (adjust == 1) currentBrightness() else currentVolume()
+                        showVodBar()
+                        showTopButtons()
+                        holdControls(true)
                     }
                 }
                 if (!dragging && (abs(dx) > slop * 2 || abs(dy) > slop * 2)) tracking = false
                 if (dragging && vod == null) dragTo(dy)
+                if (dragging && adjust != 0) {
+                    val v = (adjustStart - dy / (root.height * 0.75f)).coerceIn(0f, 1f)
+                    if (adjust == 1) { setBrightness(v); brightSlider.value = v } else { setVolume(v); volSlider.value = v }
+                }
             }
             MotionEvent.ACTION_UP -> {
                 velocity?.addMovement(e)
@@ -2286,7 +2313,9 @@ class MainActivity : Activity() {
                 val dy = e.y - downY
                 val horizontalSwipe = abs(dx) > dp(80) && abs(dx) > abs(dy) * 1.5f
                 when {
-                    dragging && vod != null -> seekBy(if (dx > 0) 30_000L else -30_000L)
+                    dragging && adjust != 0 -> holdControls(false)
+                    // one swipe = 15 s, like the buttons
+                    dragging && vod != null -> seekBy(if (dx > 0) 15_000L else -15_000L)
                     dragging -> endDrag(dy, vy)
                     // live: finger to the right = channel list (from the left), to the left = guide (from the right)
                     !dragging && vod == null && horizontalSwipe && !overlayOpen() && panel.visibility != View.VISIBLE ->
@@ -2296,15 +2325,27 @@ class MainActivity : Activity() {
                 }
                 dragging = false
                 tracking = false
+                adjust = 0
                 velocity?.recycle()
                 velocity = null
             }
             MotionEvent.ACTION_CANCEL -> {
+                if (adjust != 0) holdControls(false)
+                adjust = 0
                 if (dragging && vod == null) endDrag(0f, 0f)
                 dragging = false
                 tracking = false
             }
         }
+    }
+
+    /** Vertical swipe during movies: 0 none, 1 brightness, 2 volume. */
+    private var adjust = 0
+    private var adjustStart = 0f
+
+    private fun currentVolume(): Float {
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        return audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max
     }
 
     private fun canDrag() = !overlayOpen() && panel.visibility != View.VISIBLE &&
@@ -2917,8 +2958,13 @@ class MainActivity : Activity() {
             glassy(0xE60A1E5A.toInt(), 14)
             visibility = View.GONE
         }
-        vodTitle = text(24f, bold = true)
-        vodSub = text(17f, MUTED)
+        val compactBar = GLASS
+        if (compactBar) {
+            vodBar.setPadding(dp(18), dp(8), dp(14), dp(8))
+            vodBar.gravity = Gravity.CENTER_VERTICAL
+        }
+        vodTitle = text(if (compactBar) 17f else 24f, bold = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
+        vodSub = text(if (compactBar) 13f else 17f, MUTED).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
         vodProgress = SeekBar(this).apply {
             max = 1000
             keyProgressIncrement = 10
@@ -2937,20 +2983,21 @@ class MainActivity : Activity() {
                 }
             })
         }
-        vodTime = text(17f)
+        vodTime = text(if (compactBar) 13f else 17f)
         vodBar.addView(vodTitle)
         vodBar.addView(vodSub)
-        vodBar.addView(vodProgress, LinearLayout.LayoutParams(-1, dp(28)).apply { topMargin = dp(4); bottomMargin = dp(2) })
+        vodBar.addView(vodProgress, LinearLayout.LayoutParams(-1, dp(if (compactBar) 24 else 28)).apply { topMargin = dp(if (compactBar) 2 else 4); bottomMargin = dp(2) })
         vodBar.isClickable = true
-        vodBar.addView(vodTime)
+        if (!compactBar) vodBar.addView(vodTime)
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        fun control(label: String, action: () -> Unit) = text(16f, bold = true).apply {
+        if (compactBar) controls.addView(vodTime, LinearLayout.LayoutParams(0, -2, 1f))
+        fun control(label: String, action: () -> Unit) = text(if (compactBar) 13f else 16f, bold = true).apply {
             this.text = label
             gravity = Gravity.CENTER
-            setPadding(dp(14), dp(8), dp(14), dp(8))
+            if (compactBar) setPadding(dp(11), dp(6), dp(11), dp(6)) else setPadding(dp(14), dp(8), dp(14), dp(8))
             background = focusBg(18, 0x22FFFFFF)
             isFocusable = true
             isClickable = true
@@ -2968,8 +3015,8 @@ class MainActivity : Activity() {
             control("Subtítulos") { chooseTrack(C.TRACK_TYPE_TEXT) },
             control("Aspecto") { chooseAspect() },
         )
-        vodControls.forEach { controls.addView(it, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) }) }
-        vodBar.addView(controls, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        vodControls.forEach { controls.addView(it, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(if (compactBar) 6 else 8) }) }
+        vodBar.addView(controls, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(if (compactBar) 4 else 10) })
 
         subtitleText = text(24f).apply {
             maxLines = 4
