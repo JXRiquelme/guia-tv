@@ -673,6 +673,7 @@ class MainActivity : Activity() {
                     // first open gets more time; later stalls are fixed faster
                     val limit = when {
                         failed -> 1_500L
+                        vod != null && recoverAttempts == 0 -> 8_000L
                         recoverAttempts == 0 && p.currentPosition < 1_000 -> 10_000L
                         else -> 6_000L
                     }
@@ -693,15 +694,16 @@ class MainActivity : Activity() {
         if (w != null) {
             // movie / episode: reopen at the same second
             val pos = p.currentPosition
-            if (recoverAttempts >= 3) showStatus("Recuperando la conexión…")
+            val item = p.currentMediaItem
+            if (recoverAttempts >= 2) showStatus("Recuperando la conexión…")
             p.stop()
             main.postDelayed({
-                if (player === p && token == playToken) {
+                if (player === p && token == playToken && vod === w) {
+                    if (item != null) p.setMediaItem(item, pos) else if (pos > 0) p.seekTo(pos)
                     p.prepare()
-                    if (pos > 0) p.seekTo(pos)
                     p.playWhenReady = true
                 }
-            }, 800)
+            }, 1_500)
             return
         }
         val ch = channels.getOrNull(current) ?: return
@@ -1476,13 +1478,25 @@ class MainActivity : Activity() {
         shutter.visibility = View.VISIBLE
         val p = ensurePlayer()
         applyLanguages(p)
-        p.setMediaItem(item.build())
         val saved = history.get(w.key)
         val resumeAt = saved?.takeIf { !it.finished && it.position > 10_000 }?.position ?: 0L
-        if (resumeAt > 0) p.seekTo(resumeAt)
-        p.prepare()
-        p.playWhenReady = true
-        playToken++
+        // The server allows one connection: close the channel/movie that was playing first and
+        // give it a moment, otherwise the new request waits (that was the long "Cargando…").
+        // The resume point goes with the item, so it opens straight there (no play-then-seek).
+        val busy = p.playbackState != Player.STATE_IDLE
+        p.playWhenReady = false
+        p.stop()
+        val token = ++playToken
+        val media = item.build()
+        val start = Runnable {
+            if (token == playToken && vod === w) {
+                p.setMediaItem(media, resumeAt)
+                p.prepare()
+                p.playWhenReady = true
+                stallSince = 0L
+            }
+        }
+        if (busy) main.postDelayed(start, 700) else start.run()
         subtitleText.text = ""
         subtitleText.visibility = View.GONE
         // Appears in "Seguir viendo" right away, not only after some minutes.
