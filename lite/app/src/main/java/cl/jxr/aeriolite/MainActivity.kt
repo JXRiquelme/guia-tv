@@ -9,6 +9,7 @@ import android.util.Rational
 import android.content.Context
 import android.content.SharedPreferences
 import android.animation.ValueAnimator
+import android.view.animation.DecelerateInterpolator
 import android.graphics.Color
 import android.graphics.RenderEffect
 import android.graphics.Shader
@@ -904,12 +905,14 @@ class MainActivity : Activity() {
     private val gridColumns get() = if (portrait) 3 else 6
 
     /** Upright: guide dragged down, only the player (centred) with its card and buttons below. */
-    private var guideCollapsed = false
+    private var guideCollapsed = true          // upright start: player only (like sideways)
+    private var chromeShown = true
+    private val ease = DecelerateInterpolator(1.6f)
     private var topInset = 0
     private var bottomInset = 0
     private lateinit var portraitTabs: LinearLayout
     private lateinit var portraitTabViews: List<TextView>
-    private lateinit var portraitGuide: ImageView
+    private lateinit var portraitGuide: TextView
 
     private fun buildPortraitBar() {
         // Canales / Películas / Series at the very top (under the status bar)
@@ -957,8 +960,17 @@ class MainActivity : Activity() {
         }
         fun add(v: View, w: Int = dp(40)) = portraitBar.addView(v, LinearLayout.LayoutParams(w, dp(40)).apply { rightMargin = dp(8) })
         // only while the guide is folded away: brings it back
-        portraitGuide = icon(R.drawable.ic_menu) { expandGuide() }
-        add(portraitGuide)
+        portraitGuide = text(14f, bold = true).apply {
+            this.text = "Guía"
+            setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_menu, 0, 0, 0)
+            compoundDrawablePadding = dp(6)
+            gravity = Gravity.CENTER
+            setPadding(dp(12), 0, dp(14), 0)
+            background = surfaceBg(0xE60A1E5A.toInt(), 20, 0, 20)
+            isClickable = true
+            setOnClickListener { expandGuide() }
+        }
+        portraitBar.addView(portraitGuide, LinearLayout.LayoutParams(0, dp(40), 1f).apply { rightMargin = dp(8) })
         portraitOption = text(14f, bold = true).apply {
             setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_swap, 0, 0, 0)
             compoundDrawablePadding = dp(6)
@@ -968,8 +980,7 @@ class MainActivity : Activity() {
             isClickable = true
             setOnClickListener { chooseOption() }
         }
-        add(portraitOption, -2)
-        portraitBar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        portraitBar.addView(portraitOption, LinearLayout.LayoutParams(0, dp(40), 1f).apply { rightMargin = dp(8) })
         portraitCast = icon(R.drawable.ic_cast) { castMenu() }
         portraitPip = icon(R.drawable.ic_pip) { enterPipNow(onlyIfPlaying = false) }
         add(portraitCast)
@@ -1023,28 +1034,87 @@ class MainActivity : Activity() {
         val live = vod == null
         val top = topInset + if (live) dp(44) else 0
         if (live && !guideCollapsed) return intArrayOf(top, w * 9 / 16)
-        val below = if (live) dp(52 + 96 + 12) else dp(150)
-        val height = (h - bottomInset - below - top).coerceAtLeast(w * 9 / 16)
-        return intArrayOf(top, height)
+        val top2 = topInset
+        return intArrayOf(top2, (h - bottomInset - top2).coerceAtLeast(w * 9 / 16))
     }
 
     /** Header of the upright guide dragged down: fold the guide away. */
     private fun collapseGuide() {
         if (guideCollapsed) return
-        epgBox.animate().translationY(epgBox.height.toFloat()).alpha(0f).setDuration(200).withEndAction {
+        portraitBar.animate().alpha(0f).setDuration(180).start()
+        epgBox.animate().translationY(epgBox.height.toFloat()).alpha(0f).setDuration(260).setInterpolator(ease).withEndAction {
             guideCollapsed = true
             epgBox.translationY = 0f
             epgBox.alpha = 1f
-            applyLayoutMode()
+            moveVideoSmoothly { applyLayoutMode() }
+            showPortraitChrome()
         }.start()
     }
 
     private fun expandGuide() {
         if (!guideCollapsed) return
+        main.removeCallbacks(hideInfo)
         guideCollapsed = false
-        applyLayoutMode()
-        epgBox.translationY = epgBox.height.toFloat().coerceAtLeast(dp(300).toFloat())
-        epgBox.animate().translationY(0f).setDuration(220).start()
+        info.animate().cancel()
+        info.visibility = View.GONE
+        moveVideoSmoothly { applyLayoutMode() }
+        portraitTabs.alpha = 1f
+        portraitTabs.visibility = View.VISIBLE
+        portraitBar.alpha = 0f
+        portraitBar.animate().alpha(1f).setDuration(260).start()
+        epgBox.translationY = (root.height - (epgBox.layoutParams as FrameLayout.LayoutParams).topMargin).toFloat()
+        epgBox.alpha = 0f
+        epgBox.animate().translationY(0f).alpha(1f).setDuration(320).setInterpolator(ease).start()
+    }
+
+    /** Re-lays out and lets the picture glide from where it was to its new place. */
+    private fun moveVideoSmoothly(change: () -> Unit) {
+        val before = surface.y
+        change()
+        surface.post {
+            val delta = before - surface.y
+            if (abs(delta) > 1f) {
+                surface.translationY = delta
+                surface.animate().translationY(0f).setDuration(300).setInterpolator(ease).start()
+            }
+        }
+    }
+
+    /** Upright player only: tabs, buttons and the card fade in, and away after a few seconds. */
+    private fun showPortraitChrome() {
+        if (!portrait || !guideCollapsed || vod != null) return
+        chromeShown = true
+        updateInfo()
+        updatePortraitBar()
+        for (v in listOf(portraitTabs, portraitBar, info)) {
+            v.animate().cancel()
+            if (v.visibility != View.VISIBLE) { v.alpha = 0f; v.visibility = View.VISIBLE }
+            v.animate().alpha(1f).setDuration(220).start()
+        }
+        main.removeCallbacks(hideInfo)
+        main.postDelayed(hideInfo, 5000)
+    }
+
+    private fun hidePortraitChrome() {
+        chromeShown = false
+        for (v in listOf(portraitTabs, portraitBar, info)) {
+            v.animate().cancel()
+            v.animate().alpha(0f).setDuration(300).withEndAction { if (!chromeShown) v.visibility = View.GONE }.start()
+        }
+    }
+
+    /** Swipe up on the channel card (upright): open the guide. */
+    private var cardDownY = 0f
+    private fun cardTouch(e: MotionEvent): Boolean {
+        if (!portrait || !guideCollapsed || vod != null) return false
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { cardDownY = e.rawY; main.removeCallbacks(hideInfo) }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val dy = e.rawY - cardDownY
+                if (dy < -dp(40)) expandGuide() else main.postDelayed(hideInfo, 5000)
+            }
+        }
+        return true
     }
 
     private fun readInsets() {
@@ -1100,11 +1170,13 @@ class MainActivity : Activity() {
                 topMargin = topInset + dp(12); bottomMargin = bottomInset + dp(12)
             })
             place(pickerBox, FrameLayout.LayoutParams(minOf(dp(460), w - dp(32)), -2, Gravity.CENTER))
-            portraitTabs.visibility = if (live) View.VISIBLE else View.GONE
+            portraitTabs.visibility = if (live && (chromeShown || !guideCollapsed)) View.VISIBLE else View.GONE
+            if (portraitTabs.visibility == View.VISIBLE) portraitTabs.alpha = 1f
             (portraitTabs.layoutParams as FrameLayout.LayoutParams).let { it.topMargin = topInset; portraitTabs.layoutParams = it }
             if (live && !guideCollapsed) {
                 // player · buttons · guide
                 portraitBar.visibility = View.VISIBLE
+                portraitBar.alpha = 1f
                 portraitBar.layoutParams = FrameLayout.LayoutParams(-1, dp(52), Gravity.TOP).apply { topMargin = boxTop + boxH }
                 val guideTop = boxTop + boxH + dp(52)
                 place(epgBox, FrameLayout.LayoutParams(-1, h - guideTop - bottomInset - dp(8), Gravity.TOP).apply {
@@ -1122,13 +1194,20 @@ class MainActivity : Activity() {
             } else if (live) {
                 // player only: card and buttons at the bottom
                 epgBox.visibility = View.GONE
-                portraitBar.visibility = View.VISIBLE
-                portraitBar.layoutParams = FrameLayout.LayoutParams(-1, dp(52), Gravity.BOTTOM).apply { bottomMargin = bottomInset + dp(4) }
                 place(info, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
-                    setMargins(dp(10), 0, dp(10), bottomInset + dp(60))
+                    setMargins(dp(10), 0, dp(10), bottomInset + dp(10))
                 })
                 updateInfo()
-                info.visibility = View.VISIBLE
+                info.measure(View.MeasureSpec.makeMeasureSpec(w - dp(20), View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
+                portraitBar.layoutParams = FrameLayout.LayoutParams(-1, dp(52), Gravity.BOTTOM).apply {
+                    bottomMargin = bottomInset + dp(14) + info.measuredHeight
+                }
+                if (chromeShown) {
+                    portraitBar.visibility = View.VISIBLE
+                    portraitBar.alpha = 1f
+                    info.visibility = View.VISIBLE
+                    info.alpha = 1f
+                }
                 pickerLayer.setPadding(0, topInset, 0, bottomInset)
             } else {
                 // movie / episode: like the sideways player, upright
@@ -1995,7 +2074,7 @@ class MainActivity : Activity() {
 
     private fun overlayOpen() = setup.visibility == View.VISIBLE || account.visibility == View.VISIBLE ||
         browser.visibility == View.VISIBLE || filterBox.visibility == View.VISIBLE || pickerLayer.visibility == View.VISIBLE ||
-        epgBox.visibility == View.VISIBLE
+        (epgBox.visibility == View.VISIBLE && !portrait)
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (overlayOpen() || panel.visibility == View.VISIBLE) return super.onKeyDown(keyCode, event)
@@ -2550,7 +2629,8 @@ class MainActivity : Activity() {
 
     private fun onTap() {
         when {
-            epgBox.visibility == View.VISIBLE -> closeEpg()
+            epgBox.visibility == View.VISIBLE && !portrait -> closeEpg()
+            portrait && vod == null && !guideCollapsed -> {}
             overlayOpen() -> {}
             panel.visibility == View.VISIBLE -> hidePanel()
             vod != null -> if (vodBar.visibility == View.VISIBLE) hideVodBar() else { showVodBar(); showTopButtons() }
@@ -2675,7 +2755,8 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- overlays
 
     private val hideInfo = Runnable {
-        if (!(portrait && guideCollapsed && vod == null)) info.visibility = View.GONE
+        if (portrait && guideCollapsed && vod == null) hidePortraitChrome()
+        else if (!portrait || vod != null) info.visibility = View.GONE
         menuButton.visibility = View.GONE
         if (vod == null || locked) topButtons.visibility = View.GONE
     }
@@ -2697,7 +2778,9 @@ class MainActivity : Activity() {
         if (channels.isEmpty()) return
         if (portrait) {   // upright: the guide (or the card at the bottom) shows the programme
             updatePortraitBar()
-            if (guideCollapsed) { updateInfo(); info.visibility = View.VISIBLE }
+            if (guideCollapsed) {
+                if (touch && chromeShown && info.visibility == View.VISIBLE) hideInfo.run() else showPortraitChrome()
+            }
             return
         }
         updateInfo()
@@ -2726,7 +2809,7 @@ class MainActivity : Activity() {
         }
         infoNext.text = next?.let { "Después  ${hm.format(Date(it.start))}   ${it.title}" } ?: ""
         infoNext.visibility = if (next == null) View.GONE else View.VISIBLE
-        if (ch.alts.isEmpty()) infoOptions.visibility = View.GONE
+        if (ch.alts.isEmpty() || portrait) infoOptions.visibility = View.GONE
         else {
             val label = ch.options[altOverride?.takeIf { it < ch.options.size } ?: altIndex(ch)].label
             infoOptions.text = if (isTv) "$label  ·  mantén OK" else label
@@ -3038,6 +3121,7 @@ class MainActivity : Activity() {
         })
         col.addView(infoNext)
         info.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
+        info.setOnTouchListener { _, e -> cardTouch(e) }
         // ⇄ Opción N: other streams of the same channel
         infoOptions = text(if (compact) 13f else 16f, bold = true).apply {
             setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_swap, 0, 0, 0)
