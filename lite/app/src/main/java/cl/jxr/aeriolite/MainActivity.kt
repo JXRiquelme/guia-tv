@@ -21,6 +21,7 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.os.Handler
+import android.media.AudioManager
 import android.os.Looper
 import android.os.SystemClock
 import android.text.Editable
@@ -94,6 +95,8 @@ class MainActivity : Activity() {
 
         /** Phone/tablet app: "liquid glass" look. Android TV app: solid colours (lighter to draw). */
         const val GLASS = !BuildConfig.TV
+        const val SIDE_BUTTON = 44
+        const val SIDE_TOP = 20
         val ACCENT = if (GLASS) 0xFFFFD27A.toInt() else 0xFF7FD3FF.toInt()
         val MUTED = if (GLASS) 0xFFD0D3DA.toInt() else 0xFFB8C7F0.toInt()
         val HINT = if (GLASS) 0xFFA3A8B3.toInt() else 0xFF8FA0CC.toInt()
@@ -179,6 +182,11 @@ class MainActivity : Activity() {
     private var seekDragging = false
     private lateinit var topButtons: LinearLayout
     private lateinit var infoButton: ImageView
+    private lateinit var lockButton: ImageView
+    private lateinit var brightSlider: VerticalSlider
+    private lateinit var volSlider: VerticalSlider
+    /** Controls locked against accidental touches (phones). */
+    private var locked = false
     private lateinit var statsView: TextView
     private lateinit var castButton: ImageView
     private lateinit var pipButton: ImageView
@@ -721,11 +729,99 @@ class MainActivity : Activity() {
         val w = root.width
         val vw = (surface.layoutParams as FrameLayout.LayoutParams).width
         val bar = if (w > 0 && vw in 1 until w) (w - vw) / 2 else 0
-        val button = dp(48)
+        val button = dp(SIDE_BUTTON)
         val margin = if (bar >= button + dp(12)) (bar - button) / 2 else dp(20)
         (menuButton.layoutParams as FrameLayout.LayoutParams).let { if (it.leftMargin != margin) { it.leftMargin = margin; menuButton.layoutParams = it } }
         (topButtons.layoutParams as FrameLayout.LayoutParams).let { if (it.rightMargin != margin) { it.rightMargin = margin; topButtons.layoutParams = it } }
+        // sliders: from the middle of the screen (or below the buttons) down to near the bottom
+        val h = root.height
+        if (h == 0) return
+        val column = dp(SIDE_TOP) + 4 * button + 4 * dp(10)
+        val top = maxOf(h / 2, column + dp(6))
+        val height = (h - top - dp(20)).coerceAtLeast(dp(90))
+        for ((v, left) in listOf(brightSlider to true, volSlider to false)) {
+            val lp = v.layoutParams as FrameLayout.LayoutParams
+            if (lp.topMargin != top || lp.height != height || (if (left) lp.leftMargin else lp.rightMargin) != margin) {
+                lp.topMargin = top
+                lp.height = height
+                if (left) lp.leftMargin = margin else lp.rightMargin = margin
+                v.layoutParams = lp
+            }
+        }
     }
+
+    // ---------------------------------------------------------------- lock, brightness, volume (phones)
+
+    private fun toggleLock() {
+        locked = !locked
+        lockButton.setImageResource(if (locked) R.drawable.ic_lock else R.drawable.ic_lock_open)
+        lockButton.setColorFilter(if (locked) ACCENT else Color.WHITE)
+        main.removeCallbacks(hideInfo)
+        if (locked) {
+            info.visibility = View.GONE
+            menuButton.visibility = View.GONE
+            if (vod != null) { main.removeCallbacks(hideVodBarTask); vodBar.visibility = View.GONE }
+            showTopButtons()
+            Toast.makeText(this, "Controles bloqueados. Toca el candado para desbloquear.", Toast.LENGTH_SHORT).show()
+            main.postDelayed(hideInfo, 2500)
+        } else if (vod != null) {
+            showTopButtons()
+            showVodBar()
+        } else showInfo(true)
+    }
+
+    /** Locked: a touch only brings up the lock button for a moment. */
+    private fun showLockOnly() {
+        showTopButtons()
+        main.removeCallbacks(hideInfo)
+        main.postDelayed(hideInfo, 2500)
+    }
+
+    /** Keeps the controls on screen while a slider is being dragged. */
+    private fun holdControls(touching: Boolean) {
+        main.removeCallbacks(hideInfo)
+        main.removeCallbacks(hideVodBarTask)
+        if (!touching) {
+            if (vod != null) main.postDelayed(hideVodBarTask, 4000) else main.postDelayed(hideInfo, 4000)
+        }
+    }
+
+    private val audio by lazy { getSystemService(AUDIO_SERVICE) as AudioManager }
+
+    private fun setBrightness(v: Float) {
+        window.attributes = window.attributes.apply { screenBrightness = v.coerceIn(0.01f, 1f) }
+    }
+
+    private fun setVolume(v: Float) {
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        audio.setStreamVolume(AudioManager.STREAM_MUSIC, Math.round(v * max), 0)
+    }
+
+    private fun currentBrightness(): Float {
+        val b = window.attributes.screenBrightness
+        if (b >= 0f) return b
+        return try {
+            android.provider.Settings.System.getInt(contentResolver, android.provider.Settings.System.SCREEN_BRIGHTNESS) / 255f
+        } catch (e: Exception) { 0.5f }
+    }
+
+    /** Sliders follow the side buttons (shown with them, never while locked). */
+    private fun syncSliders() {
+        if (!::volSlider.isInitialized) return
+        val show = !isTv && !locked && topButtons.visibility == View.VISIBLE && menuButton.visibility == View.VISIBLE ||
+            (!isTv && !locked && vod != null && topButtons.visibility == View.VISIBLE)
+        val target = if (show) View.VISIBLE else View.GONE
+        if (brightSlider.visibility != target) {
+            if (show) {
+                brightSlider.value = currentBrightness()
+                val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                volSlider.value = audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max
+            }
+            brightSlider.visibility = target
+            volSlider.visibility = target
+        }
+    }
+
 
     // ---------------------------------------------------------------- stream info (i)
 
@@ -1545,6 +1641,10 @@ class MainActivity : Activity() {
             main.postDelayed(hideVodBarTask, 5000)
         }
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            if (locked) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) showLockOnly()
+                return true
+            }
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) onBack()
             return true
         }
@@ -1960,6 +2060,10 @@ class MainActivity : Activity() {
     private var cardPending = false
 
     private fun onTouch(e: MotionEvent) {
+        if (locked) {
+            if (e.actionMasked == MotionEvent.ACTION_UP) showLockOnly()
+            return
+        }
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = e.x
@@ -2182,18 +2286,16 @@ class MainActivity : Activity() {
     private val hideInfo = Runnable {
         info.visibility = View.GONE
         menuButton.visibility = View.GONE
-        if (vod == null) topButtons.visibility = View.GONE
+        if (vod == null || locked) topButtons.visibility = View.GONE
     }
 
     /** Cast + picture-in-picture buttons (top right), only on phones/tablets. */
     private fun showTopButtons() {
         if (isTv) return
-        castButton.visibility = if (caster != null) View.VISIBLE else View.GONE
-        pipButton.visibility = if (pipAllowed && castingTo == null) View.VISIBLE else View.GONE
-        infoButton.visibility = if (castingTo == null) View.VISIBLE else View.GONE
-        (castButton.layoutParams as LinearLayout.LayoutParams).bottomMargin =
-            if (pipButton.visibility == View.VISIBLE || infoButton.visibility == View.VISIBLE) dp(12) else 0
-        (pipButton.layoutParams as LinearLayout.LayoutParams).bottomMargin = if (infoButton.visibility == View.VISIBLE) dp(12) else 0
+        castButton.visibility = if (caster != null && !locked) View.VISIBLE else View.GONE
+        pipButton.visibility = if (pipAllowed && castingTo == null && !locked) View.VISIBLE else View.GONE
+        infoButton.visibility = if (castingTo == null && !locked) View.VISIBLE else View.GONE
+        lockButton.visibility = View.VISIBLE
         topButtons.visibility = View.VISIBLE
         placeSideButtons()
         castButton.alpha = if (castingTo != null) 1f else 0.9f
@@ -2492,7 +2594,7 @@ class MainActivity : Activity() {
             isFocusableInTouchMode = true
             addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
             setOnTouchListener { _, e -> onTouch(e); true }
-            if (GLASS) viewTreeObserver.addOnGlobalLayoutListener { updateBackdrop() }
+            if (GLASS) viewTreeObserver.addOnGlobalLayoutListener { updateBackdrop(); syncSliders() }
         }
         surface = if (GLASS) TextureView(this) else SurfaceView(this)
         root.addView(surface, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
@@ -2569,8 +2671,9 @@ class MainActivity : Activity() {
 
         // Round icon button (touch) that opens the side panel (channels, movies, series)
         menuButton = roundButton(R.drawable.ic_menu) { showPanel() }.apply { visibility = View.GONE }
-        root.addView(menuButton, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER_VERTICAL or Gravity.START).apply {
-            leftMargin = dp(24)
+        menuButton.setPadding(dp(10), dp(10), dp(10), dp(10))
+        root.addView(menuButton, FrameLayout.LayoutParams(dp(SIDE_BUTTON), dp(SIDE_BUTTON), Gravity.TOP or Gravity.START).apply {
+            topMargin = dp(SIDE_TOP); leftMargin = dp(24)
         })
 
         // Cast + PiP (phones/tablets only)
@@ -2582,12 +2685,30 @@ class MainActivity : Activity() {
         castButton = roundButton(R.drawable.ic_cast) { castMenu() }
         pipButton = roundButton(R.drawable.ic_pip) { enterPipNow(onlyIfPlaying = false) }
         infoButton = roundButton(R.drawable.ic_info) { toggleStats() }
-        topButtons.addView(castButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { bottomMargin = dp(12) })
-        topButtons.addView(pipButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { bottomMargin = dp(12) })
-        topButtons.addView(infoButton, LinearLayout.LayoutParams(dp(48), dp(48)))
-        root.addView(topButtons, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_VERTICAL or Gravity.END).apply {
-            rightMargin = dp(24)
+        lockButton = roundButton(R.drawable.ic_lock_open) { toggleLock() }
+        listOf(castButton, pipButton, infoButton, lockButton).forEach {
+            it.setPadding(dp(10), dp(10), dp(10), dp(10))
+            topButtons.addView(it, LinearLayout.LayoutParams(dp(SIDE_BUTTON), dp(SIDE_BUTTON)).apply { bottomMargin = dp(10) })
+        }
+        root.addView(topButtons, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(SIDE_TOP); rightMargin = dp(24)
         })
+
+        // Brightness (left) and volume (right) sliders, lower half of each side
+        brightSlider = VerticalSlider(this, getDrawable(R.drawable.ic_brightness)!!.mutate()).apply {
+            background = surfaceBg(0xE60A1E5A.toInt(), 22, 0, 22)
+            visibility = View.GONE
+            onChange = { setBrightness(it) }
+            onTouchState = { holdControls(it) }
+        }
+        volSlider = VerticalSlider(this, getDrawable(R.drawable.ic_volume)!!.mutate()).apply {
+            background = surfaceBg(0xE60A1E5A.toInt(), 22, 0, 22)
+            visibility = View.GONE
+            onChange = { setVolume(it) }
+            onTouchState = { holdControls(it) }
+        }
+        root.addView(brightSlider, FrameLayout.LayoutParams(dp(SIDE_BUTTON), dp(140), Gravity.TOP or Gravity.START))
+        root.addView(volSlider, FrameLayout.LayoutParams(dp(SIDE_BUTTON), dp(140), Gravity.TOP or Gravity.END))
 
         // Minimal stream info (resolution · fps) over the video, toggled with (i)
         statsView = text(13f, bold = true).apply {
