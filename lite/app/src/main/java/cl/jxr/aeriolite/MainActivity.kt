@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.animation.ValueAnimator
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.graphics.Color
 import android.graphics.RenderEffect
 import android.graphics.Shader
@@ -311,7 +312,7 @@ class MainActivity : Activity() {
             // menus and full-screen views must stay above the guide and the cards
             fun z(v: View, d: Int) { v.translationZ = dp(d).toFloat() }
             z(panel, 14); z(browser, 16); z(seriesView, 18); z(status, 24)
-            z(topButtons, 8); z(vodBar, 8); z(vodCenter, 8)
+            z(topButtons, 8); z(vodBar, 8); z(vodCenter, 8); z(statsView, 12)
             z(filterBox, 30); z(setup, 34); z(account, 34); z(pickerLayer, 40)
         }
         val url = prefs.getString("list", "").orEmpty()
@@ -1300,7 +1301,10 @@ class MainActivity : Activity() {
             place(subtitleText, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
                 topMargin = boxTop + boxH - dp(64); leftMargin = dp(16); rightMargin = dp(16)
             })
-            place(statsView, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = boxTop + dp(8) })
+            place(statsView, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                // movies: below the row of icons; channels: just under the tabs. Never under the camera.
+                topMargin = if (live) boxTop + dp(8) else (if (topInset > 0) topInset else statusBarHeight()) + dp(64)
+            })
             place(browser, FrameLayout.LayoutParams(-1, -1).apply { topMargin = topInset; bottomMargin = bottomInset })
             place(seriesView, FrameLayout.LayoutParams(-1, -1).apply { topMargin = topInset; bottomMargin = bottomInset })
             place(filterBox, FrameLayout.LayoutParams(minOf(dp(560), w - dp(24)), -1, Gravity.CENTER).apply {
@@ -1620,7 +1624,7 @@ class MainActivity : Activity() {
         if (GLASS) {
             vodTime.text = clock(pos)
             vodRemain.text = if (dur > 0) "−" + clock((dur - pos).coerceAtLeast(0)) else ""
-            centerPlay.setImageResource(if (p.playWhenReady) R.drawable.ic_pause else R.drawable.ic_play)
+            if (centerPlay.tag == null) centerPlay.setImageResource(if (p.playWhenReady) R.drawable.ic_pause else R.drawable.ic_play)
         } else vodTime.text = state + clock(pos) + (if (dur > 0) " / " + clock(dur) else "")
         btnPlay.text = if (p.playWhenReady) "❚❚  Pausa" else "▶  Reproducir"
         if (!p.playWhenReady) {
@@ -3469,9 +3473,10 @@ class MainActivity : Activity() {
             vodProgress.splitTrack = false
             vodProgress.minimumHeight = dp(4)
             if (Build.VERSION.SDK_INT >= 29) { vodProgress.minHeight = dp(4); vodProgress.maxHeight = dp(4) }
-            vodProgress.setPadding(dp(7), 0, dp(7), 0)
-            vodBar.addView(vodProgress, LinearLayout.LayoutParams(-1, dp(26)).apply { topMargin = dp(8); leftMargin = -dp(7); rightMargin = -dp(7) })
-            val times = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            vodProgress.setPadding(dp(8), 0, dp(8), 0)
+            head.setPadding(dp(8), 0, 0, 0)
+            vodBar.addView(vodProgress, LinearLayout.LayoutParams(-1, dp(28)).apply { topMargin = dp(8) })
+            val times = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(8), 0, dp(8), 0) }
             times.addView(vodTime, LinearLayout.LayoutParams(0, -2, 1f))
             times.addView(vodRemain, LinearLayout.LayoutParams(-2, -2))
             vodBar.addView(times, LinearLayout.LayoutParams(-1, -2))
@@ -3524,18 +3529,59 @@ class MainActivity : Activity() {
             val pad = size / 8
             setPadding(pad, pad, pad, pad)
             isClickable = true
+            // press: sinks a little; release: springs back
+            setOnTouchListener { v, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> v.animate().scaleX(0.8f).scaleY(0.8f).alpha(0.7f).setDuration(110).setInterpolator(ease).start()
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                        v.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(320).setInterpolator(OvershootInterpolator(2.2f)).start()
+                }
+                false
+            }
             setOnClickListener {
-                animate().cancel()
-                scaleX = 0.88f; scaleY = 0.88f
-                animate().scaleX(1f).scaleY(1f).setDuration(180).setInterpolator(ease).start()
                 action()
                 showVodBar()
             }
         }
-        centerPlay = bigButton(R.drawable.ic_pause, 64) { togglePause() }
-        vodCenter.addView(bigButton(R.drawable.ic_replay10, 46) { seekBy(-10_000) }, LinearLayout.LayoutParams(dp(46), dp(46)))
+        // ⟲ / ⟳: the arrow spins a little and a "−10 s" / "+10 s" floats away
+        fun seekFeedback(v: View, forward: Boolean) {
+            v.animate().cancel()
+            v.rotation = 0f
+            v.animate().rotation(if (forward) 50f else -50f).setDuration(120).setInterpolator(ease).withEndAction {
+                v.animate().rotation(0f).setDuration(300).setInterpolator(OvershootInterpolator(1.6f)).start()
+            }.start()
+            val label = text(15f, bold = true).apply { this.text = if (forward) "+10 s" else "−10 s" }
+            root.addView(label, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
+            label.post {
+                val loc = IntArray(2); v.getLocationInWindow(loc)
+                val rl = IntArray(2); root.getLocationInWindow(rl)
+                label.translationZ = dp(14).toFloat()
+                label.x = (loc[0] - rl[0] + v.width / 2 - label.width / 2).toFloat()
+                label.y = (loc[1] - rl[1] - label.height - dp(6)).toFloat()
+                label.alpha = 0f
+                label.animate().alpha(1f).translationYBy(-dp(14).toFloat()).setDuration(160).withEndAction {
+                    label.animate().alpha(0f).translationYBy(-dp(10).toFloat()).setStartDelay(250).setDuration(260)
+                        .withEndAction { root.removeView(label) }.start()
+                }.start()
+            }
+        }
+        lateinit var back10: ImageView
+        lateinit var fwd10: ImageView
+        centerPlay = bigButton(R.drawable.ic_pause, 64) {
+            togglePause()
+            // icon swap with a quick shrink / grow
+            centerPlay.tag = "anim"
+            centerPlay.animate().scaleX(0.55f).scaleY(0.55f).alpha(0f).setDuration(90).withEndAction {
+                centerPlay.setImageResource(if (player?.playWhenReady == true) R.drawable.ic_pause else R.drawable.ic_play)
+                centerPlay.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(260)
+                    .setInterpolator(OvershootInterpolator(2f)).withEndAction { centerPlay.tag = null }.start()
+            }.start()
+        }
+        back10 = bigButton(R.drawable.ic_replay10, 46) { seekBy(-10_000); seekFeedback(back10, false) }
+        fwd10 = bigButton(R.drawable.ic_forward10, 46) { seekBy(10_000); seekFeedback(fwd10, true) }
+        vodCenter.addView(back10, LinearLayout.LayoutParams(dp(46), dp(46)))
         vodCenter.addView(centerPlay, LinearLayout.LayoutParams(dp(64), dp(64)).apply { leftMargin = dp(52); rightMargin = dp(52) })
-        vodCenter.addView(bigButton(R.drawable.ic_forward10, 46) { seekBy(10_000) }, LinearLayout.LayoutParams(dp(46), dp(46)))
+        vodCenter.addView(fwd10, LinearLayout.LayoutParams(dp(46), dp(46)))
 
         subtitleText = text(24f).apply {
             maxLines = 4
