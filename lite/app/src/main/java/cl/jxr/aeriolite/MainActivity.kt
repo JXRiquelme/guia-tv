@@ -98,6 +98,8 @@ class MainActivity : Activity() {
         const val GLASS = !BuildConfig.TV
         const val SIDE_BUTTON = 44
         const val SIDE_TOP = 20
+        /** Height of the Canales/Películas/Series bar (same as in the catalogue). */
+        const val TABS_H = 58
         val ACCENT = if (GLASS) 0xFFFFD27A.toInt() else 0xFF7FD3FF.toInt()
         val MUTED = if (GLASS) 0xFFD0D3DA.toInt() else 0xFFB8C7F0.toInt()
         val HINT = if (GLASS) 0xFFA3A8B3.toInt() else 0xFF8FA0CC.toInt()
@@ -210,6 +212,8 @@ class MainActivity : Activity() {
     private lateinit var vodCenter: LinearLayout
     private lateinit var centerPlay: ImageView
     private lateinit var vodRemain: TextView
+    private lateinit var vodScrim: View
+    private lateinit var closeButton: ImageView
     private lateinit var btnPlay: TextView
     private lateinit var vodControls: List<TextView>
     private lateinit var subtitleText: TextView
@@ -307,6 +311,7 @@ class MainActivity : Activity() {
             // menus and full-screen views must stay above the guide and the cards
             fun z(v: View, d: Int) { v.translationZ = dp(d).toFloat() }
             z(panel, 14); z(browser, 16); z(seriesView, 18); z(status, 24)
+            z(topButtons, 8); z(vodBar, 8); z(vodCenter, 8)
             z(filterBox, 30); z(setup, 34); z(account, 34); z(pickerLayer, 40)
         }
         val url = prefs.getString("list", "").orEmpty()
@@ -899,7 +904,11 @@ class MainActivity : Activity() {
         val center = if (vod != null && !locked && vodBar.visibility == View.VISIBLE) View.VISIBLE else View.GONE
         if (vodCenter.visibility != center) {
             vodCenter.visibility = center
-            if (center == View.VISIBLE) { vodCenter.alpha = 0f; vodCenter.animate().alpha(1f).setDuration(180).start() }
+            vodScrim.visibility = center
+            if (center == View.VISIBLE) {
+                vodCenter.alpha = 0f; vodCenter.animate().alpha(1f).setDuration(180).start()
+                vodScrim.alpha = 0f; vodScrim.animate().alpha(1f).setDuration(180).start()
+            }
         }
         val show = !isTv && !portrait && !locked && vod == null &&
             topButtons.visibility == View.VISIBLE && menuButton.visibility == View.VISIBLE
@@ -932,32 +941,19 @@ class MainActivity : Activity() {
     private lateinit var portraitLock: ImageView
 
     private fun buildPortraitBar() {
-        // Canales / Películas / Series at the very top (under the status bar)
+        // Canales / Películas / Series at the very top: the very same bar as the catalogue's
         portraitTabs = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(4), dp(10), dp(4))
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(14), dp(24), dp(4))
             setBackgroundColor(Color.BLACK)
             isClickable = true
             visibility = View.GONE
         }
-        portraitTabViews = listOf("Canales", "Películas", "Series").mapIndexed { i, label ->
-            text(15f, bold = true).apply {
-                this.text = label
-                gravity = Gravity.CENTER
-                setPadding(dp(16), 0, dp(16), 0)
-                isClickable = true
-                setOnClickListener {
-                    when (i) {
-                        TAB_MOVIES -> openBrowser(false)
-                        TAB_SERIES -> openBrowser(true)
-                        else -> if (browser.visibility == View.VISIBLE) closeBrowser()
-                    }
-                }
-            }
-        }
-        portraitTabViews.forEach { portraitTabs.addView(it, LinearLayout.LayoutParams(-2, dp(36)).apply { rightMargin = dp(6) }) }
-        root.addView(portraitTabs, FrameLayout.LayoutParams(-1, dp(44), Gravity.TOP))
+        val (tabBar, tabViews) = topBar(null, null)
+        portraitTabViews = tabViews
+        markTabs(portraitTabViews, TAB_LIVE)
+        portraitTabs.addView(tabBar, LinearLayout.LayoutParams(-1, -2))
+        root.addView(portraitTabs, FrameLayout.LayoutParams(-1, dp(TABS_H), Gravity.TOP))
 
         portraitBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1014,11 +1010,7 @@ class MainActivity : Activity() {
         portraitCast.visibility = if (caster != null) View.VISIBLE else View.GONE
         portraitPip.visibility = if (pipAllowed && castingTo == null) View.VISIBLE else View.GONE
         portraitGuide.setColorFilter(if (guideCollapsed) Color.WHITE else ACCENT)
-        portraitTabViews.forEachIndexed { i, t ->
-            val active = i == TAB_LIVE
-            t.setTextColor(if (active) Color.WHITE else MUTED)
-            t.background = if (active) box(0x2EFFFFFF, 18) else null
-        }
+        markTabs(portraitTabViews, TAB_LIVE)
     }
 
     /** The fixed guide below the player follows the channel being watched. */
@@ -1045,7 +1037,7 @@ class MainActivity : Activity() {
         val h = root.height
         if (!portrait) return intArrayOf(0, h)
         val live = vod == null
-        val top = topInset + if (live) dp(44) else 0
+        val top = topInset + if (live) dp(TABS_H) else 0
         if (live && !guideCollapsed) return intArrayOf(top, w * 9 / 16)
         return intArrayOf(0, h)
     }
@@ -1057,7 +1049,7 @@ class MainActivity : Activity() {
     private var guideDragging = false
     private var guideFrom = 0f          // progress when the drag started
 
-    private fun barTopExpanded() = topInset + dp(44) + root.width * 9 / 16
+    private fun barTopExpanded() = topInset + dp(TABS_H) + root.width * 9 / 16
     private fun barTopCollapsed(): Int {
         val infoH = if (info.height > 0 && info.visibility == View.VISIBLE) info.height else {
             info.measure(View.MeasureSpec.makeMeasureSpec(root.width - dp(20), View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
@@ -1066,8 +1058,8 @@ class MainActivity : Activity() {
         return root.height - bottomInset - dp(14) - infoH - dp(52)
     }
 
-    private fun expandedVideoCenter() = topInset + dp(44) + root.width * 9 / 32
-    private fun guideTopExpanded() = topInset + dp(44) + root.width * 9 / 16 + dp(52)
+    private fun expandedVideoCenter() = topInset + dp(TABS_H) + root.width * 9 / 32
+    private fun guideTopExpanded() = topInset + dp(TABS_H) + root.width * 9 / 16 + dp(52)
 
     /** Shows the guide in place (below the screen) so it can be pulled up. */
     private fun prepareGuideOpening() {
@@ -1360,7 +1352,7 @@ class MainActivity : Activity() {
                 portraitBar.visibility = View.GONE
                 epgBox.visibility = View.GONE
                 info.visibility = View.GONE
-                place(vodBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { setMargins(dp(10), 0, dp(10), bottomInset + dp(12)) })
+                place(vodBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { setMargins(dp(20), 0, dp(20), bottomInset + dp(16)) })
                 pickerLayer.setPadding(0, topInset, 0, bottomInset)
             }
             updatePortraitBar()
@@ -1386,6 +1378,7 @@ class MainActivity : Activity() {
             }
             tileW = 0
             if (::grid.isInitialized) (grid.adapter as? BaseAdapter)?.notifyDataSetChanged()
+            if (browser.visibility == View.VISIBLE) root.post { refreshContinue() }
         }
         fitVideo()
     }
@@ -1895,7 +1888,7 @@ class MainActivity : Activity() {
             t.setTextColor(if (active) Color.WHITE else MUTED)
         }
         val entries: List<Any> = if (topMode == 0) cont else saved
-        entries.take(5).forEach { item ->
+        entries.take(gridColumns - 1).forEach { item ->
             val tile = makeTile()
             bindTile(tile, item)
             tile.setOnClickListener { onItem(item) }
@@ -2947,6 +2940,23 @@ class MainActivity : Activity() {
         pipButton.visibility = if (pipAllowed && castingTo == null && !locked) View.VISIBLE else View.GONE
         infoButton.visibility = if (castingTo == null && !locked) View.VISIBLE else View.GONE
         lockButton.visibility = View.VISIBLE
+        closeButton.visibility = if (vod != null && !locked && GLASS) View.VISIBLE else View.GONE
+        if (GLASS) {
+            val row = vod != null
+            if ((topButtons.orientation == LinearLayout.HORIZONTAL) != row) {
+                topButtons.orientation = if (row) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+                for (i in 0 until topButtons.childCount) {
+                    val b = topButtons.getChildAt(i)
+                    b.background = if (row) null else surfaceBg(0xE60A1E5A.toInt(), 24)
+                    if (Build.VERSION.SDK_INT >= 21) b.elevation = if (row) 0f else dp(6).toFloat()
+                    (b.layoutParams as LinearLayout.LayoutParams).let {
+                        it.bottomMargin = if (row) 0 else dp(10)
+                        it.leftMargin = if (row) dp(6) else 0
+                        b.layoutParams = it
+                    }
+                }
+            }
+        }
         topButtons.visibility = View.VISIBLE
         placeSideButtons()
         castButton.alpha = if (castingTo != null) 1f else 0.9f
@@ -3034,7 +3044,7 @@ class MainActivity : Activity() {
     /** Center message; while a movie plays it sits higher so it never covers the control bar. */
     private fun showStatus(text: String) {
         status.text = text
-        status.translationY = if (vod != null) -root.height * 0.22f else 0f
+        status.translationY = if (vod == null) 0f else if (GLASS) -dp(120).toFloat() else -root.height * 0.22f
         status.visibility = View.VISIBLE
     }
 
@@ -3353,7 +3363,8 @@ class MainActivity : Activity() {
         pipButton = roundButton(R.drawable.ic_pip) { enterPipNow(onlyIfPlaying = false) }
         infoButton = roundButton(R.drawable.ic_info) { toggleStats() }
         lockButton = roundButton(R.drawable.ic_lock_open) { toggleLock() }
-        listOf(castButton, pipButton, infoButton, lockButton).forEach {
+        closeButton = roundButton(R.drawable.ic_close) { onBack() }.apply { visibility = View.GONE }
+        listOf(castButton, pipButton, infoButton, lockButton, closeButton).forEach {
             it.setPadding(dp(10), dp(10), dp(10), dp(10))
             topButtons.addView(it, LinearLayout.LayoutParams(dp(SIDE_BUTTON), dp(SIDE_BUTTON)).apply { bottomMargin = dp(10) })
         }
@@ -3422,21 +3433,48 @@ class MainActivity : Activity() {
         }
         vodTime = text(if (compactBar) 13f else 17f, if (compactBar) MUTED else Color.WHITE)
         vodRemain = text(13f, MUTED).apply { gravity = Gravity.END }
-        vodBar.addView(vodTitle)
-        vodBar.addView(vodSub)
-        vodBar.addView(vodProgress, LinearLayout.LayoutParams(-1, dp(if (compactBar) 24 else 28)).apply { topMargin = dp(if (compactBar) 4 else 4); bottomMargin = dp(2) })
-        vodBar.isClickable = true
-        if (!compactBar) vodBar.addView(vodTime)
-        else {
-            // elapsed on the left, time left on the right (like Apple TV)
-            val times = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            times.addView(vodTime, LinearLayout.LayoutParams(0, -2, 1f))
-            times.addView(vodRemain, LinearLayout.LayoutParams(-2, -2))
-            vodBar.addView(times, LinearLayout.LayoutParams(-1, -2).apply { leftMargin = dp(4); rightMargin = dp(4) })
-        }
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+        }
+        vodBar.isClickable = true
+        if (!compactBar) {
+            vodBar.addView(vodTitle)
+            vodBar.addView(vodSub)
+            vodBar.addView(vodProgress, LinearLayout.LayoutParams(-1, dp(28)).apply { topMargin = dp(4); bottomMargin = dp(2) })
+            vodBar.addView(vodTime)
+        } else {
+            // Apple TV style: no box; small line above a bold title, icons on the right,
+            // a thin timeline, elapsed time on the left and time left on the right
+            vodBar.background = null
+            vodBar.setPadding(0, 0, 0, 0)
+            if (Build.VERSION.SDK_INT >= 21) vodBar.elevation = 0f
+            vodTitle.textSize = 20f
+            vodSub.textSize = 13f
+            val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM }
+            val names = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            names.addView(vodSub)
+            names.addView(vodTitle)
+            head.addView(names, LinearLayout.LayoutParams(0, -2, 1f))
+            head.addView(controls, LinearLayout.LayoutParams(-2, -2))
+            vodBar.addView(head, LinearLayout.LayoutParams(-1, -2))
+            // thin timeline with a small white knob
+            val track = GradientDrawable().apply { setColor(0x59FFFFFF); cornerRadius = dp(2).toFloat() }
+            val fill = android.graphics.drawable.ClipDrawable(GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(2).toFloat() },
+                Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL)
+            vodProgress.progressDrawable = LayerDrawable(arrayOf(track, fill)).apply {
+                setId(0, android.R.id.background); setId(1, android.R.id.progress)
+            }
+            vodProgress.thumb = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE); setSize(dp(14), dp(14)) }
+            vodProgress.splitTrack = false
+            vodProgress.minimumHeight = dp(4)
+            if (Build.VERSION.SDK_INT >= 29) { vodProgress.minHeight = dp(4); vodProgress.maxHeight = dp(4) }
+            vodProgress.setPadding(dp(7), 0, dp(7), 0)
+            vodBar.addView(vodProgress, LinearLayout.LayoutParams(-1, dp(26)).apply { topMargin = dp(8); leftMargin = -dp(7); rightMargin = -dp(7) })
+            val times = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            times.addView(vodTime, LinearLayout.LayoutParams(0, -2, 1f))
+            times.addView(vodRemain, LinearLayout.LayoutParams(-2, -2))
+            vodBar.addView(times, LinearLayout.LayoutParams(-1, -2))
         }
         fun control(label: String, action: () -> Unit) = text(if (compactBar) 13f else 16f, bold = true).apply {
             this.text = label
@@ -3451,7 +3489,17 @@ class MainActivity : Activity() {
             }
         }
         btnPlay = control("❚❚  Pausa") { togglePause() }
-        val extras = listOf(
+        fun iconControl(icon: Int, action: () -> Unit) = text(1f).apply {
+            setCompoundDrawablesWithIntrinsicBounds(icon, 0, 0, 0)
+            setPadding(dp(9), dp(9), dp(9), dp(9))
+            isClickable = true
+            setOnClickListener { action(); if (vod != null) showVodBar() }
+        }
+        val extras = if (compactBar) listOf(
+            iconControl(R.drawable.ic_subtitles) { chooseTrack(C.TRACK_TYPE_TEXT) },
+            iconControl(R.drawable.ic_audio) { chooseTrack(C.TRACK_TYPE_AUDIO) },
+            iconControl(R.drawable.ic_aspect) { chooseAspect() },
+        ) else listOf(
             control("Audio") { chooseTrack(C.TRACK_TYPE_AUDIO) },
             control("Subtítulos") { chooseTrack(C.TRACK_TYPE_TEXT) },
             control("Aspecto") { chooseAspect() },
@@ -3461,8 +3509,8 @@ class MainActivity : Activity() {
             btnPlay,
             control("+10 s") { seekBy(10_000) },
         ) + extras
-        vodControls.forEach { controls.addView(it, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(if (compactBar) 6 else 8) }) }
-        vodBar.addView(controls, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(if (compactBar) 6 else 10) })
+        vodControls.forEach { controls.addView(it, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(if (compactBar) 2 else 8) }) }
+        if (!compactBar) vodBar.addView(controls, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
 
         // Phones: separate round buttons in the middle of the picture
         vodCenter = LinearLayout(this).apply {
@@ -3473,10 +3521,8 @@ class MainActivity : Activity() {
         fun bigButton(icon: Int, size: Int, action: () -> Unit) = ImageView(this).apply {
             setImageResource(icon)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            val pad = size / 4
+            val pad = size / 8
             setPadding(pad, pad, pad, pad)
-            background = surfaceBg(0xE60A1E5A.toInt(), size / 2, 0, size / 2)
-            if (Build.VERSION.SDK_INT >= 21) elevation = dp(6).toFloat()
             isClickable = true
             setOnClickListener {
                 animate().cancel()
@@ -3486,10 +3532,10 @@ class MainActivity : Activity() {
                 showVodBar()
             }
         }
-        centerPlay = bigButton(R.drawable.ic_pause, 84) { togglePause() }
-        vodCenter.addView(bigButton(R.drawable.ic_replay10, 60) { seekBy(-10_000) }, LinearLayout.LayoutParams(dp(60), dp(60)))
-        vodCenter.addView(centerPlay, LinearLayout.LayoutParams(dp(84), dp(84)).apply { leftMargin = dp(36); rightMargin = dp(36) })
-        vodCenter.addView(bigButton(R.drawable.ic_forward10, 60) { seekBy(10_000) }, LinearLayout.LayoutParams(dp(60), dp(60)))
+        centerPlay = bigButton(R.drawable.ic_pause, 64) { togglePause() }
+        vodCenter.addView(bigButton(R.drawable.ic_replay10, 46) { seekBy(-10_000) }, LinearLayout.LayoutParams(dp(46), dp(46)))
+        vodCenter.addView(centerPlay, LinearLayout.LayoutParams(dp(64), dp(64)).apply { leftMargin = dp(52); rightMargin = dp(52) })
+        vodCenter.addView(bigButton(R.drawable.ic_forward10, 46) { seekBy(10_000) }, LinearLayout.LayoutParams(dp(46), dp(46)))
 
         subtitleText = text(24f).apply {
             maxLines = 4
@@ -3506,6 +3552,13 @@ class MainActivity : Activity() {
             leftMargin = dp(40); rightMargin = dp(40); bottomMargin = dp(28)
         })
         root.addView(vodCenter, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        // dark fade at the top and bottom while the controls are up (keeps white text readable)
+        vodScrim = View(this).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0x99000000.toInt(), 0x22000000, 0x22000000, 0x22000000, 0xCC000000.toInt()))
+            visibility = View.GONE
+        }
+        root.addView(vodScrim, root.indexOfChild(vodBar), FrameLayout.LayoutParams(-1, -1))
 
         status = text(22f).apply {
             maxLines = 3
