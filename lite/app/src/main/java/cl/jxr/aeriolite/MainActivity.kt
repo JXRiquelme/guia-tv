@@ -531,8 +531,8 @@ class MainActivity : Activity() {
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(Net.USER_AGENT)
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(10_000)
-            .setReadTimeoutMs(10_000)
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(20_000)
             // Close each stream's socket when switching: IPTV servers often allow a single
             // connection per account and keep a reused/half-open one "busy" for a while.
             .setDefaultRequestProperties(mapOf("Connection" to "close"))
@@ -688,7 +688,9 @@ class MainActivity : Activity() {
     private val health: Runnable = object : Runnable {
         override fun run() {
             val p = player
-            if (p != null && castingTo == null && p.playWhenReady) {
+            // movies/series are left to the player (it retries on its own); restarting them while
+            // they were still opening is what made resuming so slow. Only live channels are watched.
+            if (p != null && castingTo == null && p.playWhenReady && vod == null) {
                 val failed = p.playbackState == Player.STATE_IDLE && p.playerError != null
                 val stuck = p.playbackState == Player.STATE_BUFFERING || failed
                 val now = SystemClock.elapsedRealtime()
@@ -1519,7 +1521,7 @@ class MainActivity : Activity() {
         val rate = listOf(v?.averageBitrate ?: -1, v?.bitrate ?: -1, v?.peakBitrate ?: -1).firstOrNull { it > 0 }?.toLong() ?: -1L
         fun short(name: String) = name.substringAfterLast('.').removePrefix("OMX.").take(28)
         val lines = mutableListOf<String>()
-        if (vod != null) lines.add("Redirección ${secs(Diag.redirectMs)}  ·  Primer cuadro ${secs(Diag.firstFrameMs)}")
+        if (vod != null) lines.add("Primer cuadro ${secs(Diag.firstFrameMs)}")
         lines.add("Velocidad ${mbps(Diag.bandwidth)}  ·  Video ${mbps(rate)}  ·  Buffer ${p.totalBufferedDuration / 1000} s")
         lines.add("Solicitudes ${Diag.requests} (última ${secs(Diag.lastRequestMs)})  ·  Cortes ${Diag.rebuffers}  ·  Errores ${Diag.errors}")
         if (Diag.lastError.isNotEmpty()) lines.add("Último error: ${Diag.lastError}")
@@ -1636,13 +1638,12 @@ class MainActivity : Activity() {
         // server could still count the previous connection as busy. Ask for the real address once
         // and give every request straight to it.
         Thread {
-            val t0 = SystemClock.elapsedRealtime()
-            val direct = if (local != null) url else resolveRedirect(url)
-            Diag.redirectMs = if (local != null) 0 else SystemClock.elapsedRealtime() - t0
+            val direct = url
+            Diag.redirectMs = -1
             main.post {
                 if (token != playToken || vod !== w) return@post
                 val media = item.setUri(direct).setMediaId(url).build()
-                val wait = (if (busy) 700L else 0L) - (SystemClock.elapsedRealtime() - started)
+                val wait = (if (busy) 400L else 0L) - (SystemClock.elapsedRealtime() - started)
                 val start = Runnable {
                     if (token == playToken && vod === w) {
                         p.setMediaItem(media, resumeAt)

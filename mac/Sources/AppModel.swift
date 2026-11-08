@@ -328,7 +328,8 @@ final class AppModel: ObservableObject {
 
     private func healthTick() {
         updateStats()
-        guard !airplayActive, !recovering, !showSetup, vod != nil || currentChannel != nil, !mpv.paused, !browserOpen || vod != nil else {
+        // movies/series: mpv retries by itself; restarting them while opening made resuming slow
+        guard !airplayActive, !recovering, !showSetup, vod == nil, currentChannel != nil, !mpv.paused, !browserOpen else {
             stallSince = nil; return
         }
         let pos = mpv.position
