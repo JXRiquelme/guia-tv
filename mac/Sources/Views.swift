@@ -539,6 +539,7 @@ struct VodBar: View {
 
 struct BrowserView: View {
     @EnvironmentObject var app: AppModel
+    @ObservedObject var dl = DownloadCenter.shared
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 14), count: 6)
 
     var body: some View {
@@ -590,22 +591,28 @@ struct BrowserView: View {
     @ViewBuilder private var topSection: some View {
         let cont = app.continueList
         let later = app.laterList
-        if !cont.isEmpty || !later.isEmpty {
-            let mode = (app.topMode == 0 && cont.isEmpty) ? 1 : ((app.topMode == 1 && later.isEmpty) ? 0 : app.topMode)
+        let dls = dl.list(series: app.browserSeries)
+        if !cont.isEmpty || !later.isEmpty || !dls.isEmpty {
+            let have = [!cont.isEmpty, !later.isEmpty, !dls.isEmpty]
+            let mode = have[app.topMode] ? app.topMode : (have.firstIndex(of: true) ?? 0)
+            let count = mode == 0 ? cont.count : (mode == 1 ? later.count : dls.count)
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     if !cont.isEmpty { toggle("Seguir viendo", active: mode == 0) { app.topMode = 0 } }
                     if !later.isEmpty { toggle("Ver más tarde", active: mode == 1) { app.topMode = 1 } }
+                    if !dls.isEmpty { toggle("Descargas", active: mode == 2) { app.topMode = 2 } }
                 }
                 LazyVGrid(columns: columns, spacing: 14) {
                     if mode == 0 {
                         ForEach(cont.prefix(5)) { w in PosterTile(entry: .watch(w)) }
-                    } else {
+                    } else if mode == 1 {
                         ForEach(later.prefix(5)) { v in PosterTile(entry: .item(v)) }
+                    } else {
+                        ForEach(dls.prefix(5)) { d in PosterTile(entry: .download(d)) }
                     }
                     Button { app.topMode = mode; app.showAllTop() } label: {
                         VStack {
-                            Text("Ver todo\n(\(mode == 0 ? cont.count : later.count))").font(.system(size: 16, weight: .bold))
+                            Text("Ver todo\n(\(count))").font(.system(size: 16, weight: .bold))
                                 .multilineTextAlignment(.center).foregroundColor(.white)
                                 .frame(maxWidth: .infinity).aspectRatio(2 / 3, contentMode: .fit)
                                 .background(Theme.card).cornerRadius(8)
@@ -654,6 +661,7 @@ struct BrowserView: View {
 
 struct PosterTile: View {
     @EnvironmentObject var app: AppModel
+    @ObservedObject var dl = DownloadCenter.shared
     let entry: GridEntry
     @State private var hover = false
 
@@ -697,9 +705,17 @@ struct PosterTile: View {
             case .item(let v):
                 Button(v.series ? "Abrir serie" : "Reproducir") { app.open(entry) }
                 Button(app.isLater(v) ? "Quitar de Ver más tarde" : "Agregar a Ver más tarde") { app.toggleLater(v) }
+                if !v.series {
+                    Button(app.isDownloaded("m:" + v.streamId) ? "Eliminar descarga" : "Descargar") { app.toggleDownload(app.movieWatch(v)) }
+                }
             case .watch(let w):
                 Button("Continuar") { app.open(entry) }
                 Button("Quitar de Seguir viendo") { app.removeFromHistory(w) }
+                Button(app.isDownloaded(w.id) ? "Eliminar descarga" : "Descargar") { app.toggleDownload(w) }
+            case .download(let d):
+                if dl.localURL(d.id) != nil { Button("Reproducir") { app.open(entry) } }
+                Button("Eliminar descarga") { app.toggleDownload(d.watch) }
+                Button("Mostrar en Finder") { NSWorkspace.shared.activateFileViewerSelecting([DownloadCenter.folder.appendingPathComponent(d.file)]) }
             }
         }
     }
@@ -715,12 +731,18 @@ struct PosterTile: View {
         case .watch(let w):
             let sub = w.episode ? String(w.subtitle.components(separatedBy: "  ").first ?? "") : "Quedaste en \(app.clock(w.position))"
             return (w.title, w.poster, "", sub, w.duration > 0 ? w.position / w.duration : nil)
+        case .download(let d):
+            let ep = d.watch.episode ? String(d.watch.subtitle.components(separatedBy: "  ").first ?? "") + " · " : ""
+            let p = dl.progress[d.id]
+            let state = d.done ? "Descargado" : (dl.failed.contains(d.id) ? "Error al descargar" : "Descargando \(Int((p ?? 0) * 100)) %")
+            return (d.watch.title, d.watch.poster, d.done ? "⬇" : "", ep + state, d.done ? nil : p)
         }
     }
 }
 
 struct SeriesDetail: View {
     @EnvironmentObject var app: AppModel
+    @ObservedObject var dl = DownloadCenter.shared
     let series: VodItem
 
     var body: some View {
@@ -759,7 +781,10 @@ struct SeriesDetail: View {
 
     private func episodeRow(_ e: Episode) -> some View {
         let w = app.history.first { $0.id == "e:" + e.id }
-        let sub = w.map { $0.finished ? "Visto" : ($0.position > 30 ? "Quedaste en \(app.clock($0.position))" : "") } ?? ""
+        let seen = w.map { $0.finished ? "Visto" : ($0.position > 30 ? "Quedaste en \(app.clock($0.position))" : "") } ?? ""
+        let rec = dl.record("e:" + e.id)
+        let dlText = rec.map { $0.done ? "⬇ Descargado" : (dl.failed.contains($0.id) ? "" : "⬇ \(Int((dl.progress[$0.id] ?? 0) * 100)) %") } ?? ""
+        let sub = [seen, dlText].filter { !$0.isEmpty }.joined(separator: "  ·  ")
         return HStack(spacing: 12) {
             Text("\(e.number)").font(.system(size: 16)).foregroundColor(Theme.hint).frame(width: 34, alignment: .trailing)
             RemoteImage(url: e.image, mode: .fill).frame(width: 110, height: 62).background(Theme.card).clipped().cornerRadius(6)
@@ -773,6 +798,10 @@ struct SeriesDetail: View {
         .background(Color.white.opacity(0.04)).cornerRadius(8)
         .contentShape(Rectangle())
         .onTapGesture { app.playVod(app.episodeWatch(series, e)) }
+        .contextMenu {
+            Button("Reproducir") { app.playVod(app.episodeWatch(series, e)) }
+            Button(rec != nil ? "Eliminar descarga" : "Descargar") { app.toggleDownload(app.episodeWatch(series, e)) }
+        }
     }
 }
 

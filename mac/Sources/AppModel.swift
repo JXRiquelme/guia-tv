@@ -5,15 +5,17 @@ import AVFoundation
 enum GridEntry: Identifiable, Hashable {
     case item(VodItem)
     case watch(Watch)
+    case download(DownloadRecord)
     var id: String {
         switch self {
         case .item(let v): return "i" + v.id
         case .watch(let w): return "w" + w.id
+        case .download(let d): return "d" + d.id
         }
     }
 }
 
-enum GridMode { case category, continueAll, laterAll, search }
+enum GridMode { case category, continueAll, laterAll, downloadsAll, search }
 enum Tab: Int { case live = 0, movies = 1, series = 2 }
 
 /// All app state and behaviour. Lives on the main thread.
@@ -621,10 +623,12 @@ final class AppModel: ObservableObject {
         status = resume > 0 ? "Cargando…\nContinuando desde \(clock(resume))" : nil
         applyLanguages()
         // one connection at a time: close what was playing, then open straight at the resume point
-        let url = w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext)
+        // (a downloaded copy plays from the disk, no waiting)
+        let local = DownloadCenter.shared.localURL(w.id)
+        let url = local?.path ?? (w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext))
         mpv.stop()
         recovering = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + (local != nil ? 0.05 : 0.6)) { [weak self] in
             guard let self = self, token == self.playToken else { return }
             self.recovering = false
             self.mpv.load(url, start: resume)
@@ -827,9 +831,15 @@ final class AppModel: ObservableObject {
 
     var laterList: [VodItem] { later.filter { $0.series == browserSeries } }
 
+    var downloadList: [DownloadRecord] { DownloadCenter.shared.list(series: browserSeries) }
+
     func showAllTop() {
         searchOpen = false
-        if topMode == 0 {
+        if topMode == 2 {
+            gridMode = .downloadsAll
+            gridLabel = "Descargas"
+            entries = downloadList.map { .download($0) }
+        } else if topMode == 0 {
             gridMode = .continueAll
             gridLabel = "Seguir viendo · todo"
             entries = continueList.map { .watch($0) }
@@ -888,6 +898,8 @@ final class AppModel: ObservableObject {
         switch entry {
         case .item(let v):
             if v.series { openSeriesView(v) } else { playVod(Watch(episode: false, streamId: v.streamId, ext: v.ext, title: v.title, subtitle: v.year, poster: v.poster)) }
+        case .download(let d):
+            if DownloadCenter.shared.localURL(d.id) != nil { playVod(d.watch) }
         case .watch(let w):
             if w.episode, !w.seriesId.isEmpty, openSeries?.streamId != w.seriesId {
                 let s = VodItem(series: true, streamId: w.seriesId, title: w.title, poster: w.poster, ext: w.ext, year: "", rating: "", categoryId: "")
@@ -896,6 +908,25 @@ final class AppModel: ObservableObject {
                 playVod(w)
             }
         }
+    }
+
+    func movieWatch(_ v: VodItem) -> Watch {
+        Watch(episode: false, streamId: v.streamId, ext: v.ext, title: v.title, subtitle: v.year, poster: v.poster)
+    }
+
+    func isDownloaded(_ id: String) -> Bool { DownloadCenter.shared.record(id) != nil }
+
+    /// Download (or delete the download of) a movie or episode.
+    func toggleDownload(_ w: Watch) {
+        let dl = DownloadCenter.shared
+        if dl.record(w.id) != nil {
+            dl.remove(w.id)
+        } else {
+            guard let acc = xtream(), w.ext.lowercased() != "m3u8" else { return }
+            dl.start(w, url: w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext))
+            topMode = 2
+        }
+        if gridMode == .downloadsAll { entries = downloadList.map { .download($0) } }
     }
 
     func isLater(_ v: VodItem) -> Bool { later.contains { $0.id == v.id } }
