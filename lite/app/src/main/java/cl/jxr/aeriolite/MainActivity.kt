@@ -2007,6 +2007,7 @@ class MainActivity : Activity() {
         seriesView.alpha = 0f
         seriesView.translationX = dp(40).toFloat()
         seriesView.visibility = View.VISIBLE
+        if (GLASS) grid.animate().alpha(0f).setDuration(150).withEndAction { if (seriesView.visibility == View.VISIBLE) grid.visibility = View.INVISIBLE }.start()
         seriesView.animate().alpha(1f).translationX(0f).setDuration(220).start()
         loadEpisodes(series, null)
     }
@@ -2014,6 +2015,9 @@ class MainActivity : Activity() {
     private fun closeSeriesView() {
         if (!::seriesView.isInitialized) return
         seriesView.visibility = View.GONE
+        grid.animate().cancel()
+        grid.visibility = View.VISIBLE
+        grid.alpha = 1f
         openSeries = null
         episodes = emptyList()
     }
@@ -3805,7 +3809,8 @@ class MainActivity : Activity() {
         seriesView = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             isClickable = true
-            setBackgroundColor(if (GLASS) 0xFF0C0D10.toInt() else 0xFF081030.toInt())
+            // phones: no box of its own, it shares the catalogue's background (the grid is hidden meanwhile)
+            if (!GLASS) setBackgroundColor(0xFF081030.toInt())
             visibility = View.GONE
         }
         val seriesLeft = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -4213,21 +4218,36 @@ class MainActivity : Activity() {
         }
     }
 
+    /** "Futurama - S01E01 - Space Pilot 3000" → "Space Pilot 3000" (falls back to "Episodio N"). */
+    private fun cleanEpisodeTitle(raw: String, number: Int): String {
+        var t = raw
+        val show = openSeries?.title?.replace(Regex("""\s*\(\d{4}\)\s*$"""), "")?.trim().orEmpty()
+        if (show.isNotEmpty() && t.startsWith(show, ignoreCase = true)) t = t.substring(show.length)
+        t = t.replace(Regex("""(?i)^[\s\-–:|·]*(S\d{1,2}\s*E\d{1,3}|\d{1,2}x\d{1,3}|E\d{1,3})[\s\-–:|·]*"""), "")
+        t = t.trim(' ', '-', '–', ':', '|', '·')
+        return t.ifEmpty { "Episodio $number" }
+    }
+
     private inner class EpisodeAdapter : BaseAdapter() {
         override fun getCount() = seasonEpisodes.size
         override fun getItem(position: Int): Any? = seasonEpisodes.getOrNull(position)
         override fun getItemId(position: Int) = position.toLong()
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val row = (convertView as? LinearLayout) ?: makeRow(96, 54)
+            val row = (convertView as? LinearLayout) ?: makeRow(96, 54).apply {
+                val col = getChildAt(2) as LinearLayout
+                (col.getChildAt(0) as TextView).apply { textSize = 16f; maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
+                (col.getChildAt(1) as TextView).textSize = 13f
+            }
             val e = seasonEpisodes[position]
             val w = history.get("e:" + e.id)
-            val sub = when {
+            val progress = when {
                 w == null -> ""
                 w.finished -> "Visto"
                 w.position > 30_000 -> "Quedaste en ${clock(w.position)}"
                 else -> ""
             }
-            fillRow(row, e.number.toString(), e.image, e.title, sub)
+            val sub = listOf("Episodio ${e.number}", progress).filter { it.isNotEmpty() }.joinToString("  ·  ")
+            fillRow(row, e.number.toString(), e.image, cleanEpisodeTitle(e.title, e.number), sub)
             return row
         }
     }
