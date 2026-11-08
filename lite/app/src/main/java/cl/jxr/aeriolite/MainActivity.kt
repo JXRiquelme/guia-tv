@@ -252,6 +252,9 @@ class MainActivity : Activity() {
     private lateinit var seriesView: LinearLayout
     private lateinit var seriesPoster: ImageView
     private lateinit var seriesTitle: TextView
+    private lateinit var seriesText: LinearLayout
+    private lateinit var seriesHeader: LinearLayout
+    private lateinit var seriesBody: LinearLayout
     private lateinit var seriesInfo: TextView
     private lateinit var episodeList: ListView
     private lateinit var seasonScroll: HorizontalScrollView
@@ -1034,6 +1037,28 @@ class MainActivity : Activity() {
         landscapeParams[v]?.let { v.layoutParams = FrameLayout.LayoutParams(it) }
     }
 
+    /** Series page: side by side when sideways; upright, a header (poster + title) above the episodes. */
+    private fun layoutSeries() {
+        if (!::seriesView.isInitialized) return
+        if (portrait) {
+            seriesView.orientation = LinearLayout.VERTICAL
+            seriesHeader.orientation = LinearLayout.HORIZONTAL
+            seriesHeader.gravity = Gravity.CENTER_VERTICAL
+            seriesHeader.layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) }
+            seriesPoster.layoutParams = LinearLayout.LayoutParams(dp(104), dp(156))
+            seriesText.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(16) }
+            seriesBody.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+        } else {
+            seriesView.orientation = LinearLayout.HORIZONTAL
+            seriesHeader.orientation = LinearLayout.VERTICAL
+            seriesHeader.gravity = Gravity.NO_GRAVITY
+            seriesHeader.layoutParams = LinearLayout.LayoutParams(-2, -1).apply { rightMargin = dp(24) }
+            seriesPoster.layoutParams = LinearLayout.LayoutParams(dp(180), dp(270))
+            seriesText.layoutParams = LinearLayout.LayoutParams(dp(180), -2).apply { topMargin = dp(10) }
+            seriesBody.layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+        }
+    }
+
     /** Where the picture goes: [top, height] of the video area. */
     private fun videoBox(): IntArray {
         val w = root.width
@@ -1308,7 +1333,6 @@ class MainActivity : Activity() {
                 topMargin = if (live) boxTop + dp(8) else (if (topInset > 0) topInset else statusBarHeight()) + dp(64)
             })
             place(browser, FrameLayout.LayoutParams(-1, -1).apply { topMargin = topInset; bottomMargin = bottomInset })
-            place(seriesView, FrameLayout.LayoutParams(-1, -1).apply { topMargin = topInset; bottomMargin = bottomInset })
             place(filterBox, FrameLayout.LayoutParams(minOf(dp(560), w - dp(24)), -1, Gravity.CENTER).apply {
                 topMargin = topInset + dp(12); bottomMargin = bottomInset + dp(12)
             })
@@ -1384,6 +1408,7 @@ class MainActivity : Activity() {
             }
             tileW = 0
             if (::grid.isInitialized) (grid.adapter as? BaseAdapter)?.notifyDataSetChanged()
+            layoutSeries()
             if (browser.visibility == View.VISIBLE) root.post { refreshContinue() }
         }
         fitVideo()
@@ -1978,6 +2003,7 @@ class MainActivity : Activity() {
         seriesTitle.text = series.title
         seriesInfo.text = listOf(series.year, series.rating.ifEmpty { "" }.let { if (it.isEmpty()) "" else "★ $it" })
             .filter { it.isNotEmpty() }.joinToString("   ·   ")
+        layoutSeries()
         seriesView.alpha = 0f
         seriesView.translationX = dp(40).toFloat()
         seriesView.visibility = View.VISIBLE
@@ -3788,12 +3814,16 @@ class MainActivity : Activity() {
             background = box(if (GLASS) 0xFF1E2027.toInt() else 0xFF141C3A.toInt(), 8)
         }
         seriesLeft.addView(seriesPoster, LinearLayout.LayoutParams(dp(180), dp(270)))
+        seriesText = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         seriesTitle = text(20f, bold = true).apply { maxLines = 3 }
-        seriesLeft.addView(seriesTitle, LinearLayout.LayoutParams(dp(180), -2).apply { topMargin = dp(10) })
+        seriesText.addView(seriesTitle, LinearLayout.LayoutParams(-1, -2))
         seriesInfo = text(15f, MUTED).apply { maxLines = 3 }
-        seriesLeft.addView(seriesInfo, LinearLayout.LayoutParams(dp(180), -2).apply { topMargin = dp(4) })
+        seriesText.addView(seriesInfo, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        seriesLeft.addView(seriesText, LinearLayout.LayoutParams(dp(180), -2).apply { topMargin = dp(10) })
         seriesView.addView(seriesLeft, LinearLayout.LayoutParams(-2, -1).apply { rightMargin = dp(24) })
+        seriesHeader = seriesLeft
         val seriesRight = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        seriesBody = seriesRight
         seasonScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         seasonRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         seasonScroll.addView(seasonRow)
