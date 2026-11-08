@@ -1962,7 +1962,12 @@ class MainActivity : Activity() {
         snap()
         // The list scrolls the focused poster into view *after* this focus callback, which pushed
         // the "Seguir viendo" line under the tabs: snap again once that scroll is done.
-        grid.post { snap(); grid.invalidate() }
+        // (scrolled, not "selected": selecting the header row handed the focus back to the first
+        // row of posters, which made the catalog flicker and refuse to go up)
+        grid.post {
+            val top = grid.getChildAt(0)?.top ?: 0
+            if (grid.firstVisiblePosition == 0 && top < 0) grid.scrollListBy(top)
+        }
     }
 
     private fun closeBrowser() {
@@ -2144,8 +2149,7 @@ class MainActivity : Activity() {
             continueRow.alpha = 1f
             continueRow.requestLayout()
             continueBox.requestLayout()
-            grid.requestLayout()
-            grid.invalidateViews()
+            continueRow.invalidate()
         }
     }
 
