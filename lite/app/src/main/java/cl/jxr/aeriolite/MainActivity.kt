@@ -1538,7 +1538,8 @@ class MainActivity : Activity() {
     private var measuredFps = 0f
 
     private fun toggleStats() {
-        val on = statsView.visibility != View.VISIBLE
+        val on = !statsOn
+        statsOn = on
         prefs.edit().putBoolean("show_stats", on).apply()
         infoButton.setColorFilter(if (on) ACCENT else Color.WHITE)
         lastFrames = -1
@@ -1547,8 +1548,12 @@ class MainActivity : Activity() {
         else statsView.visibility = View.GONE
     }
 
+    private var statsOn = false
+
     private val statsTick = object : Runnable {
         override fun run() {
+            // never over the catalog (it showed "Sin video" there)
+            if (statsOn) statsView.visibility = if (browser.visibility == View.VISIBLE) View.INVISIBLE else View.VISIBLE
             val p = player
             val f = p?.videoFormat
             if (p != null && f != null && f.width > 0) {
@@ -1927,7 +1932,13 @@ class MainActivity : Activity() {
 
     /** Show the catalog from its first line ("Seguir viendo" or the categories). */
     private fun scrollCatalogTop() {
-        if (grid.firstVisiblePosition != 0 || (grid.getChildAt(0)?.top ?: 0) != 0) grid.setSelectionFromTop(0, 0)
+        fun snap() {
+            if (grid.firstVisiblePosition != 0 || (grid.getChildAt(0)?.top ?: 0) != 0) grid.setSelectionFromTop(0, 0)
+        }
+        snap()
+        // The list scrolls the focused poster into view *after* this focus callback, which pushed
+        // the "Seguir viendo" line under the tabs: snap again once that scroll is done.
+        grid.post { snap(); grid.invalidate() }
     }
 
     private fun closeBrowser() {
@@ -2103,6 +2114,15 @@ class MainActivity : Activity() {
         all.setOnClickListener { showAllTop() }
         all.setOnFocusChangeListener { _, has -> if (has) scrollCatalogTop() }
         continueRow.addView(all, LinearLayout.LayoutParams(tileW, -2))
+        // Posters added while the list is mid-layout were left unmeasured (blank line):
+        // lay the header out and redraw it once the list settles.
+        continueBox.post {
+            continueRow.alpha = 1f
+            continueRow.requestLayout()
+            continueBox.requestLayout()
+            grid.requestLayout()
+            grid.invalidateViews()
+        }
     }
 
     private fun switchTop(mode: Int) {
