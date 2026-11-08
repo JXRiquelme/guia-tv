@@ -536,6 +536,17 @@ class MainActivity : Activity() {
             // Close each stream's socket when switching: IPTV servers often allow a single
             // connection per account and keep a reused/half-open one "busy" for a while.
             .setDefaultRequestProperties(mapOf("Connection" to "close"))
+            // when the last bytes arrived: tells "slow but coming" apart from "the server went quiet"
+            .setTransferListener(object : androidx.media3.datasource.TransferListener {
+                override fun onTransferInitializing(source: androidx.media3.datasource.DataSource, dataSpec: androidx.media3.datasource.DataSpec, isNetwork: Boolean) {}
+                override fun onTransferStart(source: androidx.media3.datasource.DataSource, dataSpec: androidx.media3.datasource.DataSpec, isNetwork: Boolean) {
+                    lastByteAt = SystemClock.elapsedRealtime()
+                }
+                override fun onBytesTransferred(source: androidx.media3.datasource.DataSource, dataSpec: androidx.media3.datasource.DataSpec, isNetwork: Boolean, bytesTransferred: Int) {
+                    lastByteAt = SystemClock.elapsedRealtime()
+                }
+                override fun onTransferEnd(source: androidx.media3.datasource.DataSource, dataSpec: androidx.media3.datasource.DataSpec, isNetwork: Boolean) {}
+            })
         val extractors = DefaultExtractorsFactory().setTsExtractorFlags(
             DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
                 DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
@@ -545,7 +556,7 @@ class MainActivity : Activity() {
         // (the "stuck every few minutes, pause and play fixes it" symptom); asking again then
         // collided with the one-connection limit. The TV gets a memory cap.
         val load = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(50_000, 50_000, 1_500, 3_000)
+            .setBufferDurationsMs(60_000, 60_000, 1_500, 12_000)
             .apply { if (isTv) setTargetBufferBytes(80 * 1024 * 1024) }
             .setPrioritizeTimeOverSizeThresholds(!isTv)
             .build()
@@ -653,6 +664,7 @@ class MainActivity : Activity() {
         recoverAttempts = 0
         stallSince = 0L
         Diag.reset()
+        lastByteAt = 0L
         val p = ensurePlayer()
         applyLanguages(p)
         p.setMediaItem(liveItem(ch))
@@ -676,6 +688,7 @@ class MainActivity : Activity() {
     private var altOverride: Int? = null
     private var recoverAttempts = 0
     private var stallSince = 0L
+    @Volatile private var lastByteAt = 0L
     private var lastBuffered = -1L
     private var lastBufferedTotal = -1L
 
@@ -690,7 +703,16 @@ class MainActivity : Activity() {
             val p = player
             // movies/series are left to the player (it retries on its own); restarting them while
             // they were still opening is what made resuming so slow. Only live channels are watched.
-            if (p != null && castingTo == null && p.playWhenReady && vod == null) {
+            if (p != null && castingTo == null && p.playWhenReady && vod != null) {
+                // movie/series: never restart while bytes keep arriving (slow is not stuck);
+                // only when nothing has come in for 25 s, reopen at the same second
+                val now = SystemClock.elapsedRealtime()
+                val silent = lastByteAt > 0 && now - lastByteAt > 25_000
+                val failed = p.playbackState == Player.STATE_IDLE && p.playerError != null
+                if ((p.playbackState == Player.STATE_BUFFERING && silent) || failed) {
+                    if (stallSince == 0L || now - stallSince > 25_000) { lastByteAt = now; recover() }
+                } else if (p.playbackState == Player.STATE_READY) { stallSince = 0L; recoverAttempts = 0 }
+            } else if (p != null && castingTo == null && p.playWhenReady && vod == null) {
                 val failed = p.playbackState == Player.STATE_IDLE && p.playerError != null
                 val stuck = p.playbackState == Player.STATE_BUFFERING || failed
                 val now = SystemClock.elapsedRealtime()
@@ -732,7 +754,7 @@ class MainActivity : Activity() {
             p.stop()
             main.postDelayed({
                 if (player === p && token == playToken && vod === w) {
-                    val original = item?.mediaId?.takeIf { it.startsWith("http") }
+                    val original = item?.mediaId?.takeIf { it.startsWith("http") && false }
                     if (original != null) {
                         Thread {
                             val direct = resolveRedirect(original)
@@ -1523,6 +1545,7 @@ class MainActivity : Activity() {
         val lines = mutableListOf<String>()
         if (vod != null) lines.add("Primer cuadro ${secs(Diag.firstFrameMs)}")
         lines.add("Velocidad ${mbps(Diag.bandwidth)}  ·  Video ${mbps(rate)}  ·  Buffer ${p.totalBufferedDuration / 1000} s")
+        if (lastByteAt > 0) lines.add("Últimos datos hace ${(SystemClock.elapsedRealtime() - lastByteAt) / 1000} s")
         lines.add("Solicitudes ${Diag.requests} (última ${secs(Diag.lastRequestMs)})  ·  Cortes ${Diag.rebuffers}  ·  Errores ${Diag.errors}")
         if (Diag.lastError.isNotEmpty()) lines.add("Último error: ${Diag.lastError}")
         lines.add("Video ${v?.sampleMimeType?.substringAfter('/') ?: "—"} (${short(Diag.videoDecoder).ifEmpty { "—" }})  ·  " +
@@ -1639,6 +1662,7 @@ class MainActivity : Activity() {
         val token = ++playToken
         val started = SystemClock.elapsedRealtime()
         Diag.reset()
+        lastByteAt = 0L
         // Resuming a film makes several requests (start of the file, its index at the end, then
         // the minute you left). Each went through the server's redirect first, and each time the
         // server could still count the previous connection as busy. Ask for the real address once
