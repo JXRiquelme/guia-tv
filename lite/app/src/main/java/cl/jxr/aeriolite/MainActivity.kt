@@ -94,6 +94,7 @@ class MainActivity : Activity() {
         const val MODE_CONTINUE = 1
         const val MODE_SEARCH = 2
         const val MODE_LATER = 3
+        const val MODE_DOWNLOADS = 4
 
         /** Phone/tablet app: "liquid glass" look. Android TV app: solid colours (lighter to draw). */
         const val GLASS = !BuildConfig.TV
@@ -116,6 +117,7 @@ class MainActivity : Activity() {
     private lateinit var logos: Logos
     private lateinit var history: History
     private lateinit var later: Later
+    private lateinit var downloads: Downloads
     private var aspectMode = 0 // 0 normal, 1 16:9, 2 4:3
 
     private var channels: List<Channel> = emptyList()
@@ -263,7 +265,8 @@ class MainActivity : Activity() {
     private var selectedSeason = -1
     private lateinit var topToggleContinue: TextView
     private lateinit var topToggleLater: TextView
-    private var topMode = 0 // 0 seguir viendo, 1 ver más tarde
+    private var topMode = 0 // 0 seguir viendo, 1 ver más tarde, 2 descargas
+    private lateinit var topToggleDownloads: TextView
     private val rowAdapter = GridRowAdapter()
     private val episodeAdapter = EpisodeAdapter()
     private var browserSeries = false
@@ -305,6 +308,7 @@ class MainActivity : Activity() {
         logos = Logos(this)
         history = History(prefs)
         later = Later(prefs)
+        downloads = Downloads(this, prefs)
         hiddenChannels = HashSet(prefs.getStringSet("hide_ch", emptySet()) ?: emptySet())
         hiddenMovieCats = HashSet(prefs.getStringSet("hide_vod", emptySet()) ?: emptySet())
         hiddenSeriesCats = HashSet(prefs.getStringSet("hide_series", emptySet()) ?: emptySet())
@@ -1519,7 +1523,8 @@ class MainActivity : Activity() {
             return
         }
         if (aspectMode != 0) { aspectMode = 0; fitVideo() }
-        val url = if (w.episode) acc.episodeUrl(w.id, w.ext) else acc.movieUrl(w.id, w.ext)
+        val local = downloads.localUri(w.key)
+        val url = local ?: if (w.episode) acc.episodeUrl(w.id, w.ext) else acc.movieUrl(w.id, w.ext)
         val item = MediaItem.Builder().setUri(url)
         if (w.ext.equals("m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
         shutter.visibility = View.VISIBLE
@@ -1530,7 +1535,7 @@ class MainActivity : Activity() {
         // The server allows one connection: close the channel/movie that was playing first and
         // give it a moment, otherwise the new request waits (that was the long "Cargando…").
         // The resume point goes with the item, so it opens straight there (no play-then-seek).
-        val busy = p.playbackState != Player.STATE_IDLE
+        val busy = local == null && p.playbackState != Player.STATE_IDLE
         p.playWhenReady = false
         p.stop()
         val token = ++playToken
@@ -1540,7 +1545,7 @@ class MainActivity : Activity() {
         // server could still count the previous connection as busy. Ask for the real address once
         // and give every request straight to it.
         Thread {
-            val direct = resolveRedirect(url)
+            val direct = if (local != null) url else resolveRedirect(url)
             main.post {
                 if (token != playToken || vod !== w) return@post
                 val media = item.setUri(direct).setMediaId(url).build()
@@ -1970,22 +1975,26 @@ class MainActivity : Activity() {
         measureTiles()
         val cont = history.continueWatching(browserSeries)
         val saved = later.list(browserSeries)
+        val dls = downloads.list(browserSeries)
         continueRow.removeAllViews()
-        if (cont.isEmpty() && saved.isEmpty()) {
+        if (cont.isEmpty() && saved.isEmpty() && dls.isEmpty()) {
             continueBox.visibility = View.GONE
             return
         }
-        if (topMode == 0 && cont.isEmpty()) topMode = 1
-        if (topMode == 1 && saved.isEmpty()) topMode = 0
+        val have = listOf(cont.isNotEmpty(), saved.isNotEmpty(), dls.isNotEmpty())
+        if (!have[topMode]) topMode = have.indexOf(true)
         continueBox.visibility = View.VISIBLE
         topToggleContinue.visibility = if (cont.isEmpty()) View.GONE else View.VISIBLE
         topToggleLater.visibility = if (saved.isEmpty()) View.GONE else View.VISIBLE
-        listOf(topToggleContinue to 0, topToggleLater to 1).forEach { (t, mode) ->
+        topToggleDownloads.visibility = if (dls.isEmpty()) View.GONE else View.VISIBLE
+        main.removeCallbacks(downloadTicker)
+        if (topMode == 2 && dls.any { !it.done && !it.failed }) main.postDelayed(downloadTicker, 2000)
+        listOf(topToggleContinue to 0, topToggleLater to 1, topToggleDownloads to 2).forEach { (t, mode) ->
             val active = mode == topMode
             t.background = focusBg(16, if (active) CHIP else 0x22FFFFFF)
             t.setTextColor(if (active) Color.WHITE else MUTED)
         }
-        val entries: List<Any> = if (topMode == 0) cont else saved
+        val entries: List<Any> = when (topMode) { 0 -> cont; 1 -> saved; else -> dls }
         entries.take(gridColumns - 1).forEach { item ->
             val tile = makeTile()
             bindTile(tile, item)
@@ -2011,7 +2020,10 @@ class MainActivity : Activity() {
 
     private fun showAllTop() {
         closeSearch(restore = false)
-        if (topMode == 0) {
+        if (topMode == 2) {
+            gridMode = MODE_DOWNLOADS
+            setItems(downloads.list(browserSeries), "Descargas")
+        } else if (topMode == 0) {
             gridMode = MODE_CONTINUE
             setItems(history.continueWatching(browserSeries), "Seguir viendo · todo")
         } else {
@@ -2036,6 +2048,11 @@ class MainActivity : Activity() {
     private fun onItem(item: Any?) {
         hideKeyboard()
         when (item) {
+            is Download -> when {
+                item.done -> playVod(item.watch.copy())
+                item.failed -> itemMenu(item)
+                else -> Toast.makeText(this, "Descargando… ${item.percent} %", Toast.LENGTH_SHORT).show()
+            }
             is Watch -> {
                 if (item.episode && item.seriesId.isNotEmpty() && openSeries?.id != item.seriesId) {
                     loadEpisodes(VodItem(true, item.seriesId, item.title, item.poster, item.ext, "", ""), playAfter = item)
@@ -2162,7 +2179,7 @@ class MainActivity : Activity() {
                 grid.requestFocus()
             }
             gridMode == MODE_SEARCH || browserSearch.visibility == View.VISIBLE -> closeSearch(restore = true)
-            gridMode == MODE_CONTINUE || gridMode == MODE_LATER -> selectCategory(selectedCat[browserSeries] ?: defaultCategory())
+            gridMode == MODE_CONTINUE || gridMode == MODE_LATER || gridMode == MODE_DOWNLOADS -> selectCategory(selectedCat[browserSeries] ?: defaultCategory())
             else -> {
                 loadToken++
                 closeBrowser()
@@ -2635,13 +2652,47 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- long press menu
 
+    private fun downloadLabel(key: String) = if (downloads.get(key) != null) "Eliminar descarga" else "Descargar"
+
+    /** Download (or delete the download of) a movie or episode. */
+    private fun toggleDownload(w: Watch) {
+        if (downloads.get(w.key) != null) {
+            downloads.remove(w.key)
+            Toast.makeText(this, "Descarga eliminada", Toast.LENGTH_SHORT).show()
+        } else {
+            val acc = xtream() ?: return
+            if (w.ext.equals("m3u8", true)) {
+                Toast.makeText(this, "Este contenido no se puede descargar.", Toast.LENGTH_SHORT).show(); return
+            }
+            val url = if (w.episode) acc.episodeUrl(w.id, w.ext) else acc.movieUrl(w.id, w.ext)
+            if (downloads.start(w, url)) {
+                topMode = 2
+                Toast.makeText(this, "Descargando ${w.title}. Mientras baja, el servidor puede no permitir ver otra cosa al mismo tiempo.", Toast.LENGTH_LONG).show()
+            } else Toast.makeText(this, "No se pudo iniciar la descarga.", Toast.LENGTH_SHORT).show()
+        }
+        if (browser.visibility == View.VISIBLE) refreshContinue()
+        if (gridMode == MODE_DOWNLOADS) setItems(downloads.list(browserSeries), "Descargas")
+        if (::episodeList.isInitialized) episodeAdapter.notifyDataSetChanged()
+    }
+
+    private fun movieWatch(item: VodItem) = Watch(
+        episode = false, id = item.id, ext = item.ext, title = item.title,
+        subtitle = item.year, poster = item.poster,
+    )
+
     private fun itemMenu(item: Any) {
         when (item) {
+            is Download -> showPicker(item.watch.title, listOf("Reproducir", "Eliminar descarga"), -1) { pick ->
+                if (pick == 0) { if (item.done) playVod(item.watch.copy()) else onItem(item) } else toggleDownload(item.watch)
+            }
             is VodItem -> {
                 val inLater = later.contains(item)
                 val open = if (item.series) "Abrir serie" else "Reproducir"
-                showPicker(item.title, listOf(open, if (inLater) "Quitar de Ver más tarde" else "Agregar a Ver más tarde"), -1) { pick ->
+                val options = mutableListOf(open, if (inLater) "Quitar de Ver más tarde" else "Agregar a Ver más tarde")
+                if (!item.series) options.add(downloadLabel("m:" + item.id))
+                showPicker(item.title, options, -1) { pick ->
                     if (pick == 0) onItem(item)
+                    else if (pick == 2) toggleDownload(movieWatch(item))
                     else {
                         if (inLater) later.remove(item) else later.add(item)
                         Toast.makeText(this, if (inLater) "Quitado de Ver más tarde" else "Agregado a Ver más tarde", Toast.LENGTH_SHORT).show()
@@ -2651,8 +2702,9 @@ class MainActivity : Activity() {
                     }
                 }
             }
-            is Watch -> showPicker(item.title, listOf("Continuar", "Quitar de Seguir viendo"), -1) { pick ->
+            is Watch -> showPicker(item.title, listOf("Continuar", "Quitar de Seguir viendo", downloadLabel(item.key)), -1) { pick ->
                 if (pick == 0) onItem(item)
+                else if (pick == 2) toggleDownload(item)
                 else {
                     history.remove(item)
                     refreshContinue()
@@ -3804,7 +3856,16 @@ class MainActivity : Activity() {
             setOnFocusChangeListener { _, has -> if (has) { switchTop(1); scrollCatalogTop() } }
         }
         topHead.addView(topToggleContinue, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
-        topHead.addView(topToggleLater)
+        topHead.addView(topToggleLater, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
+        topToggleDownloads = text(17f, bold = true).apply {
+            this.text = "Descargas"
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+            isFocusable = true
+            isClickable = true
+            setOnClickListener { switchTop(2) }
+            setOnFocusChangeListener { _, has -> if (has) { switchTop(2); scrollCatalogTop() } }
+        }
+        topHead.addView(topToggleDownloads)
         continueBox.addView(topHead, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(4); bottomMargin = dp(8) })
         continueRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         continueBox.addView(continueRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })
@@ -3893,6 +3954,15 @@ class MainActivity : Activity() {
             setOnItemClickListener { _, _, position, _ ->
                 val s = openSeries ?: return@setOnItemClickListener
                 seasonEpisodes.getOrNull(position)?.let { playVod(episodeWatch(s, it)) }
+            }
+            setOnItemLongClickListener { _, _, position, _ ->
+                val s = openSeries ?: return@setOnItemLongClickListener false
+                val e = seasonEpisodes.getOrNull(position) ?: return@setOnItemLongClickListener false
+                val w = episodeWatch(s, e)
+                showPicker(cleanEpisodeTitle(e.title, e.number), listOf("Reproducir", downloadLabel(w.key)), -1) { pick ->
+                    if (pick == 0) playVod(w) else toggleDownload(w)
+                }
+                true
             }
         }
         seriesRight.addView(episodeList, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -4210,6 +4280,7 @@ class MainActivity : Activity() {
                 p.bar.visibility = if (part == null) View.GONE else View.VISIBLE
                 if (part != null) p.bar.progress = (part.position * 1000 / part.duration).toInt()
             }
+            is Download -> bindDownload(tile, item)
             is Watch -> {
                 logos.load(item.poster, p.poster)
                 p.placeholder.text = if (item.poster.isEmpty()) item.title else ""
@@ -4220,6 +4291,32 @@ class MainActivity : Activity() {
                 p.bar.visibility = if (item.duration > 0) View.VISIBLE else View.GONE
                 if (item.duration > 0) p.bar.progress = (item.position * 1000 / item.duration).toInt()
             }
+        }
+    }
+
+    private fun bindDownload(tile: LinearLayout, d: Download) {
+        val p = parts(tile)
+        val w = d.watch
+        logos.load(w.poster, p.poster)
+        p.placeholder.text = if (w.poster.isEmpty()) w.title else ""
+        p.title.text = w.title
+        val ep = if (w.episode) w.subtitle.substringBefore("  ") + "  ·  " else ""
+        p.sub.text = ep + when {
+            d.done -> "Descargado"
+            d.failed -> "Error al descargar"
+            else -> "Descargando ${d.percent} %"
+        }
+        p.sub.visibility = View.VISIBLE
+        p.badge.text = if (d.done) "⬇" else ""
+        p.badge.visibility = if (d.done) View.VISIBLE else View.GONE
+        p.bar.visibility = if (d.done || d.failed) View.GONE else View.VISIBLE
+        p.bar.progress = d.percent * 10
+    }
+
+    private val downloadTicker = Runnable {
+        if (browser.visibility == View.VISIBLE) {
+            if (topMode == 2) refreshContinue()
+            if (gridMode == MODE_DOWNLOADS) (grid.adapter as? BaseAdapter)?.notifyDataSetChanged()
         }
     }
 
@@ -4301,7 +4398,8 @@ class MainActivity : Activity() {
                 w.position > 30_000 -> "Quedaste en ${clock(w.position)}"
                 else -> ""
             }
-            val sub = listOf("Episodio ${e.number}", progress).filter { it.isNotEmpty() }.joinToString("  ·  ")
+            val dl = downloads.get("e:" + e.id)?.let { if (it.done) "⬇ Descargado" else if (it.failed) "" else "⬇ ${it.percent} %" }.orEmpty()
+            val sub = listOf("Episodio ${e.number}", progress, dl).filter { it.isNotEmpty() }.joinToString("  ·  ")
             fillRow(row, e.number.toString(), e.image, cleanEpisodeTitle(e.title, e.number), sub)
             return row
         }
