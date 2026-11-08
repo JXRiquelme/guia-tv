@@ -527,8 +527,8 @@ class MainActivity : Activity() {
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(Net.USER_AGENT)
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(15_000)
+            .setConnectTimeoutMs(10_000)
+            .setReadTimeoutMs(10_000)
             // Close each stream's socket when switching: IPTV servers often allow a single
             // connection per account and keep a reused/half-open one "busy" for a while.
             .setDefaultRequestProperties(mapOf("Connection" to "close"))
@@ -711,6 +711,19 @@ class MainActivity : Activity() {
             p.stop()
             main.postDelayed({
                 if (player === p && token == playToken && vod === w) {
+                    val original = item?.mediaId?.takeIf { it.startsWith("http") }
+                    if (original != null) {
+                        Thread {
+                            val direct = resolveRedirect(original)
+                            main.post {
+                                if (player !== p || token != playToken || vod !== w) return@post
+                                p.setMediaItem(item!!.buildUpon().setUri(direct).build(), pos)
+                                p.prepare()
+                                p.playWhenReady = true
+                            }
+                        }.start()
+                        return@postDelayed
+                    }
                     if (item != null) p.setMediaItem(item, pos) else if (pos > 0) p.seekTo(pos)
                     p.prepare()
                     p.playWhenReady = true
@@ -1521,16 +1534,28 @@ class MainActivity : Activity() {
         p.playWhenReady = false
         p.stop()
         val token = ++playToken
-        val media = item.build()
-        val start = Runnable {
-            if (token == playToken && vod === w) {
-                p.setMediaItem(media, resumeAt)
-                p.prepare()
-                p.playWhenReady = true
-                stallSince = 0L
+        val started = SystemClock.elapsedRealtime()
+        // Resuming a film makes several requests (start of the file, its index at the end, then
+        // the minute you left). Each went through the server's redirect first, and each time the
+        // server could still count the previous connection as busy. Ask for the real address once
+        // and give every request straight to it.
+        Thread {
+            val direct = resolveRedirect(url)
+            main.post {
+                if (token != playToken || vod !== w) return@post
+                val media = item.setUri(direct).setMediaId(url).build()
+                val wait = (if (busy) 700L else 0L) - (SystemClock.elapsedRealtime() - started)
+                val start = Runnable {
+                    if (token == playToken && vod === w) {
+                        p.setMediaItem(media, resumeAt)
+                        p.prepare()
+                        p.playWhenReady = true
+                        stallSince = 0L
+                    }
+                }
+                if (wait > 0) main.postDelayed(start, wait) else start.run()
             }
-        }
-        if (busy) main.postDelayed(start, 700) else start.run()
+        }.start()
         subtitleText.text = ""
         subtitleText.visibility = View.GONE
         // Appears in "Seguir viendo" right away, not only after some minutes.
@@ -1541,6 +1566,27 @@ class MainActivity : Activity() {
         showVodBar()
         main.removeCallbacks(vodSaver)
         main.postDelayed(vodSaver, 10_000)
+    }
+
+    /** One hop of the server's redirect, without opening the video itself (keeps the single connection free). */
+    private fun resolveRedirect(address: String): String {
+        var c: java.net.HttpURLConnection? = null
+        return try {
+            c = java.net.URL(address).openConnection() as java.net.HttpURLConnection
+            c.instanceFollowRedirects = false
+            c.requestMethod = "HEAD"          // headers only: never starts sending the video
+            c.connectTimeout = 6000
+            c.readTimeout = 6000
+            c.setRequestProperty("User-Agent", Net.USER_AGENT)
+            c.setRequestProperty("Connection", "close")
+            val code = c.responseCode
+            val loc = c.getHeaderField("Location")
+            if (code in 300..399 && loc != null) java.net.URL(java.net.URL(address), loc).toString() else address
+        } catch (e: Exception) {
+            address
+        } finally {
+            c?.disconnect()
+        }
     }
 
     private val vodSaver = object : Runnable {
