@@ -248,6 +248,7 @@ class MainActivity : Activity() {
     private lateinit var continueRow: LinearLayout
     private lateinit var chipsScroll: HorizontalScrollView
     private lateinit var chipsRow: LinearLayout
+    private lateinit var chipsLine: LinearLayout
     private lateinit var browserSearch: EditText
     private lateinit var gridLabel: TextView
     private lateinit var browserMessage: TextView
@@ -574,7 +575,7 @@ class MainActivity : Activity() {
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
         val p = ExoPlayer.Builder(this, renderers)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(http, extractors).setLoadErrorHandlingPolicy(retries))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(http, FastSeekExtractors(extractors)).setLoadErrorHandlingPolicy(retries))
             .setLoadControl(load)
             .build()
         val sv = surface
@@ -2044,6 +2045,25 @@ class MainActivity : Activity() {
                 isClickable = true
                 setOnClickListener { selectCategory(cat) }
                 setOnFocusChangeListener { _, has -> if (has) scrollCatalogTop() }
+                // left/right stay on this line: the list used to send the focus down to the posters
+                // when the next category was still off screen
+                setOnKeyListener { v, keyCode, event ->
+                    if (keyCode != KeyEvent.KEYCODE_DPAD_RIGHT && keyCode != KeyEvent.KEYCODE_DPAD_LEFT) return@setOnKeyListener false
+                    if (event.action == KeyEvent.ACTION_DOWN) {
+                        val i = chips.indexOf(v)
+                        val next = if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) i + 1 else i - 1
+                        val target: View? = chips.getOrNull(next)
+                            ?: if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) chipsLine.getChildAt(1) else null
+                        if (target != null) {
+                            if (target.parent === chipsRow) {
+                                val x = target.left - (chipsScroll.width - target.width) / 2
+                                chipsScroll.smoothScrollTo(x.coerceAtLeast(0), 0)
+                            }
+                            target.requestFocus()
+                        }
+                    }
+                    true
+                }
             }
         }
         chips.forEach { chipsRow.addView(it, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) }) }
@@ -4028,7 +4048,7 @@ class MainActivity : Activity() {
         grid.addHeaderView(continueBox, null, false)
         // Header 2: categories + search + filter
         val catalogHead = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val chipsLine = LinearLayout(this).apply {
+        chipsLine = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
