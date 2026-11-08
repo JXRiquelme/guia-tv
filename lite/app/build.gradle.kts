@@ -11,8 +11,8 @@ android {
         applicationId = "cl.jxr.aeriolite"
         minSdk = 21
         targetSdk = 35
-        versionCode = 39
-        versionName = "1.35"
+        versionCode = 40
+        versionName = "1.36"
         // ARM only (phones and Android TV boxes): keeps the FFmpeg part small
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
     }

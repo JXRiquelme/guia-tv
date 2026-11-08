@@ -2494,8 +2494,15 @@ class MainActivity : Activity() {
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
                 val forward = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
                 when {
-                    // moving between the buttons: never seek, not even past the last one
-                    vodBar.visibility == View.VISIBLE && vodBar.hasFocus() -> {}
+                    // moving between the buttons (done here: the key never reaches Android's own
+                    // focus search once this method takes it); never seek, not even past the ends
+                    vodBar.visibility == View.VISIBLE && vodBar.hasFocus() -> {
+                        val buttons = vodControls.filter { it.visibility == View.VISIBLE }
+                        val at = buttons.indexOfFirst { it.isFocused }
+                        if (at >= 0) buttons.getOrNull(at + if (forward) 1 else -1)?.requestFocus()
+                        else if (vodProgress.isFocused) vodProgress.onKeyDown(keyCode, event)
+                        showVodBar()
+                    }
                     // bar on screen but not from seeking: arrows go to the buttons
                     vodBar.visibility == View.VISIBLE && !seekMode -> showVodBar(true)
                     else -> seekBy(if (forward) step else -step)
