@@ -1570,10 +1570,11 @@ class MainActivity : Activity() {
                     f.frameRate > 0f -> f.frameRate
                     else -> 0f
                 }
+                // by width too: cinema crops (1920×804) are still 1080p
                 val label = when {
-                    f.height >= 2000 -> "4K"
-                    f.height >= 1000 -> "1080p"
-                    f.height >= 700 -> "720p"
+                    f.height >= 2000 || f.width >= 3800 -> "4K"
+                    f.height >= 1000 || f.width >= 1900 -> "1080p"
+                    f.height >= 700 || f.width >= 1260 -> "720p"
                     else -> "${f.height}p"
                 }
                 statsView.text = "$label  ·  ${f.width}×${f.height}" + (if (fps > 0f) "  ·  ${"%.0f".format(Locale.US, fps)} fps" else "") +
@@ -3647,6 +3648,8 @@ class MainActivity : Activity() {
 
         // Minimal stream info (resolution · fps) over the video, toggled with (i)
         statsView = text(12f, bold = true).apply {
+            maxLines = 12
+            ellipsize = null
             gravity = Gravity.CENTER
             setLineSpacing(0f, 1.15f)
             setPadding(dp(14), dp(7), dp(14), dp(7))
