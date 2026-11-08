@@ -540,9 +540,22 @@ class MainActivity : Activity() {
             DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
                 DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
         )
+        // min == max: the player keeps downloading little by little instead of filling up, going
+        // quiet and coming back later. That idle connection was being dropped by the server
+        // (the "stuck every few minutes, pause and play fixes it" symptom); asking again then
+        // collided with the one-connection limit. The TV gets a memory cap.
         val load = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15_000, 40_000, 1_500, 3_000)
+            .setBufferDurationsMs(50_000, 50_000, 1_500, 3_000)
+            .apply { if (isTv) setTargetBufferBytes(80 * 1024 * 1024) }
+            .setPrioritizeTimeOverSizeThresholds(!isTv)
             .build()
+        // a request that fails is retried quickly (it used to wait longer between tries)
+        val retries = object : androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(6) {
+            override fun getRetryDelayMsFor(info: androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.LoadErrorInfo): Long {
+                val d = super.getRetryDelayMsFor(info)
+                return if (d == C.TIME_UNSET) d else minOf(400L * info.errorCount, 2_000L)
+            }
+        }
         // The device's own audio decoders go first (movies with 5.1 / AC-3 audio stalled at 0:00
         // when FFmpeg was preferred); FFmpeg only takes formats the device can't decode
         // (AC-3, E-AC-3, MP2… on phones without them), so those channels are not silent.
@@ -550,12 +563,13 @@ class MainActivity : Activity() {
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
         val p = ExoPlayer.Builder(this, renderers)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(http, extractors))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(http, extractors).setLoadErrorHandlingPolicy(retries))
             .setLoadControl(load)
             .build()
         val sv = surface
         if (sv is SurfaceView) p.setVideoSurfaceView(sv) else p.setVideoTextureView(sv as TextureView)
         applyLanguages(p)
+        p.addAnalyticsListener(diagListener)
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
@@ -638,6 +652,7 @@ class MainActivity : Activity() {
         altOverride = null
         recoverAttempts = 0
         stallSince = 0L
+        Diag.reset()
         val p = ensurePlayer()
         applyLanguages(p)
         p.setMediaItem(liveItem(ch))
@@ -1440,6 +1455,80 @@ class MainActivity : Activity() {
         fitVideo()
     }
 
+    // ---------------------------------------------------------------- diagnostics (shown with (i))
+
+    private object Diag {
+        var openAt = 0L; var firstFrameMs = -1L; var redirectMs = -1L
+        var requests = 0; var errors = 0; var lastError = ""; var lastRequestMs = -1L; var bytes = 0L
+        var bandwidth = 0L; var rebuffers = 0; var dropped = 0
+        var videoDecoder = ""; var audioDecoder = ""; var wasReady = false
+        fun reset() {
+            openAt = SystemClock.elapsedRealtime(); firstFrameMs = -1; redirectMs = -1
+            requests = 0; errors = 0; lastError = ""; lastRequestMs = -1; bytes = 0
+            rebuffers = 0; dropped = 0; wasReady = false
+        }
+    }
+
+    private val diagListener = object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+        override fun onLoadStarted(t: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                                   info: androidx.media3.exoplayer.source.LoadEventInfo, data: androidx.media3.exoplayer.source.MediaLoadData) {
+            Diag.requests++
+        }
+        override fun onLoadCompleted(t: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                                     info: androidx.media3.exoplayer.source.LoadEventInfo, data: androidx.media3.exoplayer.source.MediaLoadData) {
+            Diag.lastRequestMs = info.loadDurationMs
+            Diag.bytes += info.bytesLoaded
+        }
+        override fun onLoadError(t: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                                 info: androidx.media3.exoplayer.source.LoadEventInfo, data: androidx.media3.exoplayer.source.MediaLoadData,
+                                 error: java.io.IOException, wasCanceled: Boolean) {
+            Diag.errors++
+            Diag.lastError = (error.javaClass.simpleName + " " + (error.message ?: "")).take(60)
+        }
+        override fun onBandwidthEstimate(t: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                                         totalLoadTimeMs: Int, totalBytesLoaded: Long, bitrateEstimate: Long) {
+            Diag.bandwidth = bitrateEstimate
+        }
+        override fun onVideoDecoderInitialized(t: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                                               decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) {
+            Diag.videoDecoder = decoderName
+        }
+        override fun onAudioDecoderInitialized(t: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                                               decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) {
+            Diag.audioDecoder = decoderName
+        }
+        override fun onRenderedFirstFrame(t: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
+            if (Diag.firstFrameMs < 0) Diag.firstFrameMs = SystemClock.elapsedRealtime() - Diag.openAt
+        }
+        override fun onDroppedVideoFrames(t: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
+            Diag.dropped += droppedFrames
+        }
+        override fun onPlaybackStateChanged(t: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime, state: Int) {
+            if (state == Player.STATE_READY) Diag.wasReady = true
+            else if (state == Player.STATE_BUFFERING && Diag.wasReady) Diag.rebuffers++
+        }
+    }
+
+    private fun secs(ms: Long) = if (ms < 0) "—" else String.format(Locale.US, "%.1f s", ms / 1000f)
+    private fun mbps(bps: Long) = if (bps <= 0) "—" else String.format(Locale.US, "%.1f Mbps", bps / 1_000_000f)
+
+    /** Extra lines under resolution · fps: where the time goes when a film is slow. */
+    private fun diagText(p: ExoPlayer): String {
+        val v = p.videoFormat
+        val a = p.audioFormat
+        val rate = listOf(v?.averageBitrate ?: -1, v?.bitrate ?: -1, v?.peakBitrate ?: -1).firstOrNull { it > 0 }?.toLong() ?: -1L
+        fun short(name: String) = name.substringAfterLast('.').removePrefix("OMX.").take(28)
+        val lines = mutableListOf<String>()
+        if (vod != null) lines.add("Redirección ${secs(Diag.redirectMs)}  ·  Primer cuadro ${secs(Diag.firstFrameMs)}")
+        lines.add("Velocidad ${mbps(Diag.bandwidth)}  ·  Video ${mbps(rate)}  ·  Buffer ${p.totalBufferedDuration / 1000} s")
+        lines.add("Solicitudes ${Diag.requests} (última ${secs(Diag.lastRequestMs)})  ·  Cortes ${Diag.rebuffers}  ·  Errores ${Diag.errors}")
+        if (Diag.lastError.isNotEmpty()) lines.add("Último error: ${Diag.lastError}")
+        lines.add("Video ${v?.sampleMimeType?.substringAfter('/') ?: "—"} (${short(Diag.videoDecoder).ifEmpty { "—" }})  ·  " +
+            "Audio ${a?.sampleMimeType?.substringAfter('/') ?: "—"} (${short(Diag.audioDecoder).ifEmpty { "—" }})")
+        if (Diag.dropped > 0) lines.add("Cuadros perdidos ${Diag.dropped}")
+        return lines.joinToString("\n")
+    }
+
     // ---------------------------------------------------------------- stream info (i)
 
     private var lastFrames = -1
@@ -1485,7 +1574,8 @@ class MainActivity : Activity() {
                     f.height >= 700 -> "720p"
                     else -> "${f.height}p"
                 }
-                statsView.text = "$label  ·  ${f.width}×${f.height}" + if (fps > 0f) "  ·  ${"%.0f".format(Locale.US, fps)} fps" else ""
+                statsView.text = "$label  ·  ${f.width}×${f.height}" + (if (fps > 0f) "  ·  ${"%.0f".format(Locale.US, fps)} fps" else "") +
+                    "\n" + diagText(p)
             } else {
                 statsView.text = "Sin video"
                 measuredFps = 0f
@@ -1540,12 +1630,15 @@ class MainActivity : Activity() {
         p.stop()
         val token = ++playToken
         val started = SystemClock.elapsedRealtime()
+        Diag.reset()
         // Resuming a film makes several requests (start of the file, its index at the end, then
         // the minute you left). Each went through the server's redirect first, and each time the
         // server could still count the previous connection as busy. Ask for the real address once
         // and give every request straight to it.
         Thread {
+            val t0 = SystemClock.elapsedRealtime()
             val direct = if (local != null) url else resolveRedirect(url)
+            Diag.redirectMs = if (local != null) 0 else SystemClock.elapsedRealtime() - t0
             main.post {
                 if (token != playToken || vod !== w) return@post
                 val media = item.setUri(direct).setMediaId(url).build()
@@ -2358,6 +2451,7 @@ class MainActivity : Activity() {
             }
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_TV_INPUT -> showPanel()
             KeyEvent.KEYCODE_PROG_RED, KeyEvent.KEYCODE_O -> chooseOption()
+            KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_PROG_BLUE, KeyEvent.KEYCODE_I -> toggleStats()
             KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_GUIDE -> openEpg()
             KeyEvent.KEYCODE_INFO -> showInfo(false)
             in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> typeDigit(keyCode - KeyEvent.KEYCODE_0)
@@ -3544,8 +3638,10 @@ class MainActivity : Activity() {
         root.addView(volSlider, FrameLayout.LayoutParams(dp(SIDE_BUTTON), dp(140), Gravity.TOP or Gravity.END))
 
         // Minimal stream info (resolution · fps) over the video, toggled with (i)
-        statsView = text(13f, bold = true).apply {
-            setPadding(dp(12), dp(5), dp(12), dp(5))
+        statsView = text(12f, bold = true).apply {
+            gravity = Gravity.CENTER
+            setLineSpacing(0f, 1.15f)
+            setPadding(dp(14), dp(7), dp(14), dp(7))
             glassy(0xB3000000.toInt(), 14)
             visibility = View.GONE
         }
@@ -3659,6 +3755,7 @@ class MainActivity : Activity() {
             control("Audio") { chooseTrack(C.TRACK_TYPE_AUDIO) },
             control("Subtítulos") { chooseTrack(C.TRACK_TYPE_TEXT) },
             control("Aspecto") { chooseAspect() },
+            control("Info") { toggleStats() },
         )
         vodControls = if (compactBar) extras else listOf(
             control("−10 s") { seekBy(-10_000) },
