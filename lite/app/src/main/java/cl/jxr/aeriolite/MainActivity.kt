@@ -1946,29 +1946,39 @@ class MainActivity : Activity() {
             buildChips()
             if (items.isEmpty()) selectCategory(selectedCat[series] ?: defaultCategory())
         }
-        grid.setSelectionFromTop(0, 0)
+        listToTop()
         grid.post {
-            grid.setSelectionFromTop(0, 0)
+            listToTop()
             val first = if (continueBox.visibility == View.VISIBLE) continueRow.getChildAt(0) else chips.firstOrNull()
             (first ?: grid).requestFocus()
-            grid.post { grid.setSelectionFromTop(0, 0) }
+            grid.post { listToTop() }
+            grid.postDelayed({ listToTop() }, 250)
+        }
+    }
+
+    /**
+     * Back to the very top of the catalog ("Seguir viendo") by scrolling only. With the remote,
+     * "selecting" row 0 was turned into selecting the first row of posters (the header rows can't
+     * be selected), so the catalog opened past "Seguir viendo".
+     */
+    private fun listToTop() {
+        if (grid.childCount == 0) return
+        var guard = 0
+        while (guard++ < 60) {
+            val top = grid.getChildAt(0)?.top ?: 0
+            if (grid.firstVisiblePosition == 0 && top >= 0) break
+            grid.scrollListBy(if (grid.firstVisiblePosition == 0) top else -(grid.height.coerceAtLeast(1) - 1))
         }
     }
 
     /** Show the catalog from its first line ("Seguir viendo" or the categories). */
     private fun scrollCatalogTop() {
-        fun snap() {
-            if (grid.firstVisiblePosition != 0 || (grid.getChildAt(0)?.top ?: 0) != 0) grid.setSelectionFromTop(0, 0)
-        }
-        snap()
+        listToTop()
         // The list scrolls the focused poster into view *after* this focus callback, which pushed
         // the "Seguir viendo" line under the tabs: snap again once that scroll is done.
         // (scrolled, not "selected": selecting the header row handed the focus back to the first
         // row of posters, which made the catalog flicker and refuse to go up)
-        grid.post {
-            val top = grid.getChildAt(0)?.top ?: 0
-            if (grid.firstVisiblePosition == 0 && top < 0) grid.scrollListBy(top)
-        }
+        grid.post { listToTop() }
     }
 
     private fun closeBrowser() {
