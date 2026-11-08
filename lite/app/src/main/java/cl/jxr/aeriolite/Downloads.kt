@@ -79,6 +79,36 @@ class Downloads(private val context: Context, private val prefs: SharedPreferenc
         save()
     }
 
+    /** Free space where downloads are kept, in bytes (-1 if unknown). */
+    fun freeBytes(): Long = try {
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: context.filesDir
+        android.os.StatFs(dir.path).availableBytes
+    } catch (e: Exception) { -1L }
+
+    /** Size of a finished (or partly downloaded) file. */
+    fun fileBytes(d: Download): Long = File(d.file).length()
+
+    /**
+     * Size of the file on the server, read from the headers only (no body). -1 if the server
+     * doesn't say. Runs on a background thread.
+     */
+    fun remoteSize(url: String): Long {
+        var c: java.net.HttpURLConnection? = null
+        return try {
+            c = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                connectTimeout = 15_000; readTimeout = 15_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", Net.USER_AGENT)
+                setRequestProperty("Range", "bytes=0-0")
+                setRequestProperty("Connection", "close")
+            }
+            val range = c.getHeaderField("Content-Range")
+            range?.substringAfterLast('/')?.trim()?.toLongOrNull()
+                ?: c.getHeaderField("Content-Length")?.toLongOrNull()?.takeIf { c.responseCode == 200 && it > 1 }
+                ?: -1L
+        } catch (e: Exception) { -1L } finally { runCatching { c?.disconnect() } }
+    }
+
     private fun refresh(d: Download) {
         try {
             manager.query(DownloadManager.Query().setFilterById(d.managerId)).use { c ->

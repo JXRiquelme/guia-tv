@@ -2154,6 +2154,7 @@ class MainActivity : Activity() {
         topToggleDownloads.visibility = if (dls.isEmpty()) View.GONE else View.VISIBLE
         main.removeCallbacks(downloadTicker)
         if (topMode == 2 && dls.any { !it.done && !it.failed }) main.postDelayed(downloadTicker, 2000)
+        topToggleDownloads.text = if (topMode == 2) downloadsLabel() else "Descargas"
         listOf(topToggleContinue to 0, topToggleLater to 1, topToggleDownloads to 2).forEach { (t, mode) ->
             val active = mode == topMode
             t.background = focusBg(16, if (active) CHIP else 0x22FFFFFF)
@@ -2195,7 +2196,7 @@ class MainActivity : Activity() {
         closeSearch(restore = false)
         if (topMode == 2) {
             gridMode = MODE_DOWNLOADS
-            setItems(downloads.list(browserSeries), "Descargas")
+            setItems(downloads.list(browserSeries), downloadsLabel())
         } else if (topMode == 0) {
             gridMode = MODE_CONTINUE
             setItems(history.continueWatching(browserSeries), "Seguir viendo · todo")
@@ -2502,6 +2503,23 @@ class MainActivity : Activity() {
             main.removeCallbacks(hideVodBarTask)
             main.postDelayed(hideVodBarTask, 5000)
         }
+        // Menu key on a poster or episode = its options (Descargar, Ver más tarde…), same as a long press
+        if (event.keyCode == KeyEvent.KEYCODE_MENU && vod == null && pickerLayer.visibility != View.VISIBLE &&
+            browser.visibility == View.VISIBLE) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                val f = currentFocus
+                if (f != null && f.isLongClickable) { f.performLongClick(); return true }
+                if (f != null && f.parent is ListView) {
+                    val list = f.parent as ListView
+                    val pos = list.getPositionForView(f)
+                    if (pos != ListView.INVALID_POSITION) {
+                        list.onItemLongClickListener?.onItemLongClick(list, f, pos, list.getItemIdAtPosition(pos))
+                        return true
+                    }
+                }
+            }
+            if (event.action == KeyEvent.ACTION_UP) return true
+        }
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (locked) {
                 if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) showLockOnly()
@@ -2565,7 +2583,8 @@ class MainActivity : Activity() {
         }
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                if (vodBar.visibility == View.VISIBLE) showVodBar(true) else { togglePause(); showVodBar(true) }
+                // first press only brings the controls up; then OK works the focused button
+                showVodBar(true)
             }
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE -> togglePause()
             KeyEvent.KEYCODE_MEDIA_PLAY -> { p.playWhenReady = true; showVodBar() }
@@ -2846,15 +2865,55 @@ class MainActivity : Activity() {
                 Toast.makeText(this, "Este contenido no se puede descargar.", Toast.LENGTH_SHORT).show(); return
             }
             val url = if (w.episode) acc.episodeUrl(w.id, w.ext) else acc.movieUrl(w.id, w.ext)
+            confirmDownload(w, url)
+            return
+        }
+        afterDownloadChange()
+    }
+
+    private fun gb(bytes: Long): String = when {
+        bytes < 0 -> "?"
+        bytes >= 1_000_000_000L -> String.format(Locale("es"), "%.1f GB", bytes / 1e9)
+        else -> String.format(Locale("es"), "%.0f MB", bytes / 1e6)
+    }
+
+    /** Shows the size and the free space first, with a warning when it would not fit. */
+    private fun confirmDownload(w: Watch, url: String) {
+        if (player?.isPlaying == true && vod != null) saveVodProgress()
+        Toast.makeText(this, "Calculando tamaño…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val size = downloads.remoteSize(url)
+            val free = downloads.freeBytes()
+            main.post {
+                if (isFinishing) return@post
+                val fits = size < 0 || free < 0 || size + 200_000_000L < free
+                val sizeText = if (size > 0) gb(size) else "tamaño desconocido"
+                val title = if (fits) "${w.title}\nTamaño: $sizeText  ·  Libre: ${gb(free)}"
+                    else "⚠ No hay espacio suficiente\n${w.title} ocupa $sizeText y quedan ${gb(free)} libres."
+                val options = if (fits) listOf("Descargar ($sizeText)", "Cancelar")
+                    else listOf("Descargar de todos modos", "Cancelar")
+                showPicker(title, options, -1) { pick -> if (pick == 0) startDownload(w, url) }
+            }
+        }.start()
+    }
+
+    private fun startDownload(w: Watch, url: String) {
+        run {
             if (downloads.start(w, url)) {
                 topMode = 2
                 Toast.makeText(this, "Descargando ${w.title}. Mientras baja, el servidor puede no permitir ver otra cosa al mismo tiempo.", Toast.LENGTH_LONG).show()
             } else Toast.makeText(this, "No se pudo iniciar la descarga.", Toast.LENGTH_SHORT).show()
         }
+        afterDownloadChange()
+    }
+
+    private fun afterDownloadChange() {
         if (browser.visibility == View.VISIBLE) refreshContinue()
-        if (gridMode == MODE_DOWNLOADS) setItems(downloads.list(browserSeries), "Descargas")
+        if (gridMode == MODE_DOWNLOADS) setItems(downloads.list(browserSeries), downloadsLabel())
         if (::episodeList.isInitialized) episodeAdapter.notifyDataSetChanged()
     }
+
+    private fun downloadsLabel() = "Descargas  ·  ${gb(downloads.freeBytes())} libres"
 
     private fun movieWatch(item: VodItem) = Watch(
         episode = false, id = item.id, ext = item.ext, title = item.title,
@@ -2863,7 +2922,8 @@ class MainActivity : Activity() {
 
     private fun itemMenu(item: Any) {
         when (item) {
-            is Download -> showPicker(item.watch.title, listOf("Reproducir", "Eliminar descarga"), -1) { pick ->
+            is Download -> showPicker("${item.watch.title}\n${gb(downloads.fileBytes(item))} en el equipo  ·  ${gb(downloads.freeBytes())} libres",
+                listOf("Reproducir", if (item.done || item.failed) "Eliminar descarga" else "Cancelar y eliminar descarga"), -1) { pick ->
                 if (pick == 0) { if (item.done) playVod(item.watch.copy()) else onItem(item) } else toggleDownload(item.watch)
             }
             is VodItem -> {
@@ -2922,6 +2982,7 @@ class MainActivity : Activity() {
                 armExit()
             }
             browser.visibility == View.VISIBLE -> browserBack()
+            vod != null && vodBar.visibility == View.VISIBLE -> hideVodBar()
             vod != null -> leaveVod()
             setup.visibility == View.VISIBLE && channels.isNotEmpty() -> {
                 hideSetup()
@@ -4264,7 +4325,7 @@ class MainActivity : Activity() {
             setPadding(dp(20), dp(18), dp(20), dp(14))
             glassy(0xF20A1E5A.toInt(), 16, 2)
         }
-        pickerTitle = text(21f, bold = true)
+        pickerTitle = text(21f, bold = true).apply { maxLines = 4; ellipsize = null }
         pickerBox.addView(pickerTitle, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         pickerList = styledList().apply {
             adapter = pickerAdapter
@@ -4488,7 +4549,7 @@ class MainActivity : Activity() {
         p.title.text = w.title
         val ep = if (w.episode) w.subtitle.substringBefore("  ") + "  ·  " else ""
         p.sub.text = ep + when {
-            d.done -> "Descargado"
+            d.done -> "Descargado · ${gb(downloads.fileBytes(d))}"
             d.failed -> "Error al descargar"
             else -> "Descargando ${d.percent} %"
         }
