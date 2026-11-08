@@ -314,6 +314,7 @@ final class AppModel: ObservableObject {
     private var healthTimer: Timer?
     private var stallSince: Date?
     private var lastPos: Double = -1
+    private var lastCache: Double = -2
     private var recoverAttempts = 0
     private var recovering = false
 
@@ -334,7 +335,10 @@ final class AppModel: ObservableObject {
         if moving && !mpv.buffering { stallSince = nil; return }
         let now = Date()
         if stallSince == nil { stallSince = now }
-        let limit: Double = recoverAttempts == 0 ? (vod != nil ? 8 : 10) : 6
+        // movies: keep waiting while data still arrives (opening far into a film can be slow)
+        let cache = Double(mpv.getString("demuxer-cache-time") ?? "") ?? -1
+        if vod != nil && cache != lastCache { lastCache = cache; stallSince = nil; return }
+        let limit: Double = vod != nil ? (recoverAttempts == 0 ? 25 : 15) : (recoverAttempts == 0 ? 10 : 6)
         if now.timeIntervalSince(stallSince!) >= limit { recover() }
     }
 

@@ -657,6 +657,8 @@ class MainActivity : Activity() {
     private var altOverride: Int? = null
     private var recoverAttempts = 0
     private var stallSince = 0L
+    private var lastBuffered = -1L
+    private var lastBufferedTotal = -1L
 
     /**
      * Checks the stream every second. If it is stuck (buffering, or failed) for a few seconds
@@ -671,12 +673,19 @@ class MainActivity : Activity() {
                 val failed = p.playbackState == Player.STATE_IDLE && p.playerError != null
                 val stuck = p.playbackState == Player.STATE_BUFFERING || failed
                 val now = SystemClock.elapsedRealtime()
-                if (stuck) {
+                // movies/series: while data keeps arriving it is loading, not stuck (opening a film far
+                // into it can take a while on a slow TV box: the old 8 s limit kept restarting it forever)
+                val buffered = p.bufferedPosition
+                val receiving = vod != null && (buffered != lastBuffered || p.totalBufferedDuration != lastBufferedTotal)
+                lastBuffered = buffered
+                lastBufferedTotal = p.totalBufferedDuration
+                if (stuck && !receiving) {
                     if (stallSince == 0L) stallSince = now
                     // first open gets more time; later stalls are fixed faster
                     val limit = when {
                         failed -> 1_500L
-                        vod != null && recoverAttempts == 0 -> 8_000L
+                        vod != null && recoverAttempts == 0 -> 25_000L
+                        vod != null -> 15_000L
                         recoverAttempts == 0 && p.currentPosition < 1_000 -> 10_000L
                         else -> 6_000L
                     }
