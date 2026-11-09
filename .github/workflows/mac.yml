@@ -3,7 +3,7 @@ name: Compilar AerioTV Lite para Mac
 on:
   push:
     branches: [main]
-    paths: ["mac/**", ".github/workflows/mac.yml"]
+    paths: ["mac/**", "lite/cloud.properties", ".github/workflows/mac.yml"]
   workflow_dispatch:
 
 permissions:

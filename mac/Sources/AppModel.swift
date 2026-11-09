@@ -136,6 +136,15 @@ final class AppModel: ObservableObject {
         history = Store.load("history", [Watch].self) ?? []
         later = Store.load("later", [VodItem].self) ?? []
 
+        Cloud.shared.onApplied = { [weak self] in
+            // another device saved: its "Seguir viendo", "Ver más tarde" and channel options
+            guard let self = self else { return }
+            self.history = Store.load("history", [Watch].self) ?? []
+            self.later = Store.load("later", [VodItem].self) ?? []
+            self.altVersion += 1
+        }
+        Cloud.shared.refresh()
+
         mpv.onReady = { [weak self] in self?.playbackReady() }
         mpv.onFirstFrame = { [weak self] in self?.shutter = false }
         mpv.onEndFile = { [weak self] error, eof in self?.playbackEnded(error: error, eof: eof) }
@@ -287,6 +296,7 @@ final class AppModel: ObservableObject {
         guard vod == nil, let ch = currentChannel, ch.options.indices.contains(i) else { return }
         if i != altIndex(ch) {
             UserDefaults.standard.set(i, forKey: "alt_" + ch.name)
+            Cloud.shared.markDirty()
             altVersion += 1
             play(current)
         } else { flashInfo(withButtons: true) }

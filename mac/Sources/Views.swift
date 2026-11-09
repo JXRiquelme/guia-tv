@@ -1078,6 +1078,8 @@ struct SettingsView: View {
                 Divider().opacity(0.4)
                 SettingsRow(title: "Cuenta de películas y series") { app.showSettings = false; app.pendingSeries = false; app.showAccount = true }
                 SettingsRow(title: "Cambiar dirección de la lista") { app.showSettings = false; app.openSetup(nil) }
+                Divider().opacity(0.4)
+                GoogleAccountRow()
                 HStack { Spacer(); Button("Listo") { app.showSettings = false }.keyboardShortcut(.defaultAction) }
             }
             .foregroundColor(.white)
@@ -1087,6 +1089,34 @@ struct SettingsView: View {
     }
 }
 
+
+/// Google account: Seguir viendo, historial, Ver más tarde y opciones de canales en todos los equipos.
+struct GoogleAccountRow: View {
+    @ObservedObject var cloud = Cloud.shared
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Cuenta de Google").font(.system(size: 15, weight: .semibold))
+            if let mail = cloud.email, cloud.signedIn {
+                Text("Conectado como \(mail)").font(.system(size: 13)).foregroundColor(Theme.muted)
+                HStack {
+                    Button("Sincronizar ahora") {
+                        cloud.syncNow { e in message = e.map { "No se pudo sincronizar: \($0)" } ?? "Sincronizado" }
+                    }
+                    Button("Cerrar sesión") { cloud.signOut(); message = "Sesión cerrada. Tus listas siguen en este Mac." }
+                }
+            } else {
+                Button(cloud.busy ? "Conectando…" : "Iniciar sesión con Google") {
+                    cloud.signIn { e in message = e ?? (cloud.signedIn ? "Listo: tus listas ya se sincronizan." : nil) }
+                }.disabled(cloud.busy)
+                Text("Seguir viendo, el historial, Ver más tarde y la opción de cada canal quedan iguales en la TV, el teléfono y el Mac.")
+                    .font(.system(size: 13)).foregroundColor(Theme.muted).fixedSize(horizontal: false, vertical: true)
+            }
+            if let m = message { Text(m).font(.system(size: 13)).foregroundColor(Theme.muted) }
+        }
+    }
+}
 
 // MARK: - Movies / series player (Apple TV style)
 

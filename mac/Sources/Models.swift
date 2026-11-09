@@ -391,8 +391,10 @@ enum Store {
         return try? JSONDecoder().decode(type, from: data)
     }
 
-    static func save<T: Encodable>(_ key: String, _ value: T) {
+    static func save<T: Encodable>(_ key: String, _ value: T, sync: Bool = true) {
         if let data = try? JSONEncoder().encode(value) { d.set(data, forKey: key) }
+        // the lists that travel with the Google account
+        if sync && (key == "history" || key == "later") { Cloud.shared.markDirty() }
     }
 
     static var cacheDir: URL {
