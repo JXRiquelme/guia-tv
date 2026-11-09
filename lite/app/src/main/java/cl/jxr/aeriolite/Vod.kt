@@ -250,6 +250,9 @@ class History(private val prefs: SharedPreferences) {
         prefs.edit().putString("history", a.toString()).apply()
     }
 
+    /** Re-read after the cloud copy replaced the saved list. */
+    fun reload() { entries.clear(); entries.addAll(load()) }
+
     fun get(key: String): Watch? = entries.firstOrNull { it.key == key }
 
     fun update(w: Watch, position: Long, duration: Long) {
@@ -302,6 +305,8 @@ class Later(private val prefs: SharedPreferences) {
         }
         prefs.edit().putString("later", a.toString()).apply()
     }
+
+    fun reload() { entries.clear(); entries.addAll(load()) }
 
     fun list(series: Boolean) = entries.filter { it.series == series }
     fun contains(item: VodItem) = entries.any { it.series == item.series && it.id == item.id }

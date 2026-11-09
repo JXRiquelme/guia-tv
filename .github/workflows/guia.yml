@@ -17,6 +17,14 @@ jobs:
         env:
           SERVER_XMLTV_URL: ${{ secrets.SERVER_XMLTV_URL }}
         run: python3 build_guide.py
+      - name: Mantener activa la sincronización (Supabase pausa proyectos sin uso por 7 días)
+        continue-on-error: true
+        run: |
+          url=$(grep '^supabase_url=' lite/cloud.properties | cut -d= -f2- | tr -d ' ')
+          key=$(grep '^supabase_key=' lite/cloud.properties | cut -d= -f2- | tr -d ' ')
+          [ -n "$url" ] && [ -n "$key" ] || exit 0
+          curl -sS -o /dev/null -w "Supabase: %{http_code}\n" "$url/rest/v1/user_data?select=user_id&limit=1" \
+            -H "apikey: $key" -H "Authorization: Bearer $key"
       - name: Guardar cambios
         run: |
           git config user.name "github-actions[bot]"

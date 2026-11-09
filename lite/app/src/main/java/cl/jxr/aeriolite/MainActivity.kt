@@ -117,6 +117,7 @@ class MainActivity : Activity() {
     private lateinit var logos: Logos
     private lateinit var history: History
     private lateinit var later: Later
+    private lateinit var cloud: Cloud
     private lateinit var downloads: Downloads
     private var aspectMode = 0 // 0 normal, 1 16:9, 2 4:3
 
@@ -309,6 +310,12 @@ class MainActivity : Activity() {
         logos = Logos(this)
         history = History(prefs)
         later = Later(prefs)
+        cloud = Cloud(prefs) {
+            // another device saved: show its "Seguir viendo", "Ver más tarde" and channel options here
+            history.reload()
+            later.reload()
+            if (browser.visibility == View.VISIBLE) refreshContinue()
+        }
         downloads = Downloads(this, prefs)
         hiddenChannels = HashSet(prefs.getStringSet("hide_ch", emptySet()) ?: emptySet())
         hiddenMovieCats = HashSet(prefs.getStringSet("hide_vod", emptySet()) ?: emptySet())
@@ -330,6 +337,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        if (::cloud.isInitialized) cloud.refresh()
         if (player != null) return
         val w = vod
         when {
@@ -2778,13 +2786,16 @@ class MainActivity : Activity() {
     private fun openSettings() {
         val audio = audioChoices.firstOrNull { it.first == audioPref() }?.second ?: "Español"
         val subs = subChoices.firstOrNull { it.first == subPref() }?.second ?: "Desactivados"
+        val google = if (cloud.signedIn) "Cuenta de Google:  ${cloud.email ?: "conectada"}" else "Iniciar sesión con Google (sincronizar)"
         showPicker("Configuración", listOf(
             "Idioma del audio:  $audio",
             "Subtítulos:  $subs",
             "Cuenta de películas y series",
             "Cambiar dirección de la lista",
+            google,
         ), -1) { pick ->
             when (pick) {
+                4 -> openGoogleAccount()
                 0 -> showPicker("Idioma del audio", audioChoices.map { it.second }, audioChoices.indexOfFirst { it.first == audioPref() }) { a ->
                     prefs.edit().putString("audio_lang", audioChoices[a].first).apply()
                     player?.let(::applyLanguages)
@@ -2797,6 +2808,30 @@ class MainActivity : Activity() {
                 }
                 2 -> { pendingSeries = false; hidePanel(); browser.visibility = View.GONE; showAccount(null) }
                 3 -> { hidePanel(); browser.visibility = View.GONE; showSetup(null) }
+            }
+        }
+    }
+
+    /** Google account: Seguir viendo, Ver más tarde, historial y opciones de canales en todos los equipos. */
+    private fun openGoogleAccount() {
+        if (!cloud.signedIn) {
+            Toast.makeText(this, "Abriendo Google…", Toast.LENGTH_SHORT).show()
+            cloud.signIn(this) { error ->
+                when {
+                    error != null -> Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+                    cloud.signedIn -> Toast.makeText(this, "Sesión iniciada: ${cloud.email}. Tus listas ya se sincronizan.", Toast.LENGTH_LONG).show()
+                }
+            }
+            return
+        }
+        showPicker("Cuenta de Google\n${cloud.email}\nSe sincronizan Seguir viendo, el historial, Ver más tarde y la opción de cada canal.",
+            listOf("Sincronizar ahora", "Cerrar sesión"), -1) { pick ->
+            when (pick) {
+                0 -> cloud.syncNow { e -> Toast.makeText(this, e?.let { "No se pudo sincronizar: $it" } ?: "Sincronizado", Toast.LENGTH_SHORT).show() }
+                1 -> {
+                    cloud.signOut()
+                    Toast.makeText(this, "Sesión cerrada. Tus listas siguen guardadas en este equipo.", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }

@@ -3,6 +3,13 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Google account sync (Supabase). These values are public by design (they ship inside the app);
+// each account's data is protected by the table's row-level security.
+val cloud = java.util.Properties().apply {
+    rootProject.file("cloud.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+fun cloudValue(key: String) = "\"" + (cloud.getProperty(key) ?: "").trim() + "\""
+
 android {
     namespace = "cl.jxr.aeriolite"
     compileSdk = 35
@@ -11,10 +18,13 @@ android {
         applicationId = "cl.jxr.aeriolite"
         minSdk = 21
         targetSdk = 35
-        versionCode = 47
-        versionName = "1.43"
+        versionCode = 48
+        versionName = "1.44"
         // ARM only (phones and Android TV boxes): keeps the FFmpeg part small
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
+        buildConfigField("String", "SUPABASE_URL", cloudValue("supabase_url"))
+        buildConfigField("String", "SUPABASE_KEY", cloudValue("supabase_key"))
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", cloudValue("google_web_client_id"))
     }
 
     buildFeatures { buildConfig = true }
@@ -71,6 +81,10 @@ dependencies {
     implementation("androidx.media3:media3-datasource:$media3")
     // FFmpeg audio decoders (AC-3, E-AC-3, MP2, DTS…) for channels without sound
     implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.5.0+1")
+    // "Iniciar sesión con Google" (account chooser of the device) for the cloud sync
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
     // Google Cast: phone/tablet app only (the TV app doesn't include it)
     "movilImplementation"("com.google.android.gms:play-services-cast-framework:21.4.0")
     "movilImplementation"("androidx.mediarouter:mediarouter:1.6.0")
