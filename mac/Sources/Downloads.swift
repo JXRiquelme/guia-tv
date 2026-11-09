@@ -43,6 +43,43 @@ final class DownloadCenter: NSObject, ObservableObject, URLSessionDownloadDelega
 
     func list(series: Bool) -> [DownloadRecord] { records.filter { $0.watch.episode == series } }
 
+    /// Free space on the disk that holds the downloads (-1 if unknown).
+    static var freeBytes: Int64 {
+        let v = try? folder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        if let n = v?.volumeAvailableCapacityForImportantUsage { return n }
+        return -1
+    }
+
+    func fileBytes(_ id: String) -> Int64 {
+        guard let r = record(id) else { return -1 }
+        let a = try? FileManager.default.attributesOfItem(atPath: Self.folder.appendingPathComponent(r.file).path)
+        return (a?[.size] as? NSNumber)?.int64Value ?? -1
+    }
+
+    /// Size of the file on the server, read from the headers only (-1 if it doesn't say).
+    static func remoteSize(_ url: String, done: @escaping (Int64) -> Void) {
+        guard let u = URL(string: url) else { done(-1); return }
+        var req = URLRequest(url: u, timeoutInterval: 15)
+        req.setValue(MPV.userAgent, forHTTPHeaderField: "User-Agent")
+        req.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        req.setValue("close", forHTTPHeaderField: "Connection")
+        URLSession.shared.dataTask(with: req) { _, resp, _ in
+            var size: Int64 = -1
+            if let h = resp as? HTTPURLResponse {
+                if let r = h.value(forHTTPHeaderField: "Content-Range"), let n = Int64(r.split(separator: "/").last ?? "") { size = n }
+                else if h.statusCode == 200, h.expectedContentLength > 1 { size = h.expectedContentLength }
+            }
+            DispatchQueue.main.async { done(size) }
+        }.resume()
+    }
+
+    static func text(_ bytes: Int64) -> String {
+        if bytes < 0 { return "?" }
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        return f.string(fromByteCount: bytes)
+    }
+
     func start(_ w: Watch, url: String) {
         guard record(w.id) == nil, let u = URL(string: url) else { return }
         var req = URLRequest(url: u)

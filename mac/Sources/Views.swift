@@ -100,8 +100,9 @@ struct RootView: View {
                 }
                 if app.showStats && !app.statsText.isEmpty && !app.mini {
                     Text(app.statsText).font(.system(size: 13, weight: .semibold)).monospacedDigit().foregroundColor(.white)
+                        .multilineTextAlignment(.center)
                         .padding(.horizontal, 14).padding(.vertical, 6)
-                        .glass(Capsule(), dark: 0.35)
+                        .glass(RoundedRectangle(cornerRadius: 14), dark: 0.35)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                         .padding(.top, app.vod != nil ? 92 : 22)
                         .allowsHitTesting(false)
@@ -600,7 +601,7 @@ struct BrowserView: View {
                 HStack(spacing: 8) {
                     if !cont.isEmpty { toggle("Seguir viendo", active: mode == 0) { app.topMode = 0 } }
                     if !later.isEmpty { toggle("Ver más tarde", active: mode == 1) { app.topMode = 1 } }
-                    if !dls.isEmpty { toggle("Descargas", active: mode == 2) { app.topMode = 2 } }
+                    if !dls.isEmpty { toggle(mode == 2 ? app.downloadsLabel : "Descargas", active: mode == 2) { app.topMode = 2 } }
                 }
                 LazyVGrid(columns: columns, spacing: 14) {
                     if mode == 0 {
@@ -734,7 +735,7 @@ struct PosterTile: View {
         case .download(let d):
             let ep = d.watch.episode ? String(d.watch.subtitle.components(separatedBy: "  ").first ?? "") + " · " : ""
             let p = dl.progress[d.id]
-            let state = d.done ? "Descargado" : (dl.failed.contains(d.id) ? "Error al descargar" : "Descargando \(Int((p ?? 0) * 100)) %")
+            let state = d.done ? "Descargado · \(DownloadCenter.text(dl.fileBytes(d.id)))" : (dl.failed.contains(d.id) ? "Error al descargar" : "Descargando \(Int((p ?? 0) * 100)) %")
             return (d.watch.title, d.watch.poster, d.done ? "⬇" : "", ep + state, d.done ? nil : p)
         }
     }

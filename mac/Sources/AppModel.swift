@@ -384,8 +384,18 @@ final class AppModel: ObservableObject {
         let h = Int(mpv.getString("video-params/h") ?? "") ?? 0
         guard w > 0, h > 0 else { statsText = "Sin video"; return }
         let fps = Double(mpv.getString("estimated-vf-fps") ?? "") ?? Double(mpv.getString("container-fps") ?? "") ?? 0
-        let label = h >= 2000 ? "4K" : h >= 1000 ? "1080p" : h >= 700 ? "720p" : "\(h)p"
-        statsText = "\(label)  ·  \(w)×\(h)" + (fps > 0 ? "  ·  \(Int(fps.rounded())) fps" : "")
+        // by width too: cinema crops (1920×804) are still 1080p
+        let label = (h >= 2000 || w >= 3800) ? "4K" : (h >= 1000 || w >= 1900) ? "1080p" : (h >= 700 || w >= 1260) ? "720p" : "\(h)p"
+        var text = "\(label)  ·  \(w)×\(h)" + (fps > 0 ? "  ·  \(Int(fps.rounded())) fps" : "")
+        let cache = Double(mpv.getString("demuxer-cache-duration") ?? "") ?? -1
+        let speed = Double(mpv.getString("cache-speed") ?? "") ?? -1
+        let rate = Double(mpv.getString("video-bitrate") ?? "") ?? -1
+        var line: [String] = []
+        if speed >= 0 { line.append(String(format: "Velocidad %.1f Mbps", speed * 8 / 1_000_000)) }
+        if rate > 0 { line.append(String(format: "Video %.1f Mbps", rate / 1_000_000)) }
+        if cache >= 0 { line.append("Buffer \(Int(cache)) s") }
+        if !line.isEmpty { text += "\n" + line.joined(separator: "  ·  ") }
+        statsText = text
     }
 
     private func playbackReady() {
@@ -838,7 +848,7 @@ final class AppModel: ObservableObject {
         searchOpen = false
         if topMode == 2 {
             gridMode = .downloadsAll
-            gridLabel = "Descargas"
+            gridLabel = downloadsLabel
             entries = downloadList.map { .download($0) }
         } else if topMode == 0 {
             gridMode = .continueAll
@@ -924,11 +934,36 @@ final class AppModel: ObservableObject {
             dl.remove(w.id)
         } else {
             guard let acc = xtream(), w.ext.lowercased() != "m3u8" else { return }
-            dl.start(w, url: w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext))
-            topMode = 2
+            let url = w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext)
+            // size and free space first, with a warning when it would not fit
+            DownloadCenter.remoteSize(url) { [weak self] size in
+                guard let self = self else { return }
+                let free = DownloadCenter.freeBytes
+                let fits = size < 0 || free < 0 || size + 200_000_000 < free
+                let sizeText = size > 0 ? DownloadCenter.text(size) : "tamaño desconocido"
+                let alert = NSAlert()
+                if fits {
+                    alert.messageText = "¿Descargar “\(w.title)”?"
+                    alert.informativeText = "Tamaño: \(sizeText)\nEspacio libre: \(DownloadCenter.text(free))\n\nMientras baja, el proveedor puede no permitir ver otra cosa al mismo tiempo."
+                    alert.addButton(withTitle: "Descargar (\(sizeText))")
+                } else {
+                    alert.alertStyle = .warning
+                    alert.messageText = "No hay espacio suficiente"
+                    alert.informativeText = "“\(w.title)” ocupa \(sizeText) y quedan \(DownloadCenter.text(free)) libres en el disco."
+                    alert.addButton(withTitle: "Descargar de todos modos")
+                }
+                alert.addButton(withTitle: "Cancelar")
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+                dl.start(w, url: url)
+                self.topMode = 2
+                if self.gridMode == .downloadsAll { self.entries = self.downloadList.map { .download($0) } }
+            }
+            return
         }
         if gridMode == .downloadsAll { entries = downloadList.map { .download($0) } }
     }
+
+    var downloadsLabel: String { "Descargas  ·  \(DownloadCenter.text(DownloadCenter.freeBytes)) libres" }
 
     func isLater(_ v: VodItem) -> Bool { later.contains { $0.id == v.id } }
 

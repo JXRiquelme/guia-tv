@@ -40,8 +40,10 @@ final class MPV: ObservableObject {
             ("user-agent", MPV.userAgent),
             ("network-timeout", "15"),
             ("cache", "yes"),
-            ("demuxer-max-bytes", "64MiB"),
-            ("demuxer-readahead-secs", "20"),
+            // a minute ahead (the provider sends films slowly); after a stall, gather 8 s before going on
+            ("demuxer-max-bytes", "150MiB"),
+            ("demuxer-readahead-secs", "60"),
+            ("cache-pause-wait", "8"),
             ("keep-open", "no"),
             ("idle", "yes"),
             ("input-default-bindings", "no"),
