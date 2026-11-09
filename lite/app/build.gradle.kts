@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,7 +7,7 @@ plugins {
 
 // Google account sync (Supabase). These values are public by design (they ship inside the app);
 // each account's data is protected by the table's row-level security.
-val cloud = java.util.Properties().apply {
+val cloud = Properties().apply {
     rootProject.file("cloud.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
 fun cloudValue(key: String) = "\"" + (cloud.getProperty(key) ?: "").trim() + "\""
