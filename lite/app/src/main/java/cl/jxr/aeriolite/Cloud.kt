@@ -237,7 +237,8 @@ class Cloud(private val prefs: SharedPreferences, private val onRemoteApplied: (
             requestMethod = method
             connectTimeout = 15_000; readTimeout = 20_000
             setRequestProperty("apikey", BuildConfig.SUPABASE_KEY)
-            setRequestProperty("Authorization", "Bearer " + if (auth) token() else BuildConfig.SUPABASE_KEY)
+            // the publishable key goes only as apikey; Authorization carries the user's session
+            if (auth) setRequestProperty("Authorization", "Bearer " + token())
             setRequestProperty("Content-Type", "application/json")
         }
 

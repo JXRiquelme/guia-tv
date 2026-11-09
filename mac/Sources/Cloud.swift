@@ -257,7 +257,8 @@ final class Cloud: NSObject, ObservableObject, ASWebAuthenticationPresentationCo
         var req = URLRequest(url: URL(string: CloudConfig.url + path)!, timeoutInterval: 20)
         req.httpMethod = method
         req.setValue(CloudConfig.key, forHTTPHeaderField: "apikey")
-        req.setValue("Bearer " + (auth ? try token() : CloudConfig.key), forHTTPHeaderField: "Authorization")
+        // the publishable key goes only as apikey; Authorization carries the user's session
+        if auth { req.setValue("Bearer " + (try token()), forHTTPHeaderField: "Authorization") }
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let prefer = prefer { req.setValue(prefer, forHTTPHeaderField: "Prefer") }
         req.httpBody = body

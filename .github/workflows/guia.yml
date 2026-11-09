@@ -24,7 +24,7 @@ jobs:
           key=$(grep '^supabase_key=' lite/cloud.properties | cut -d= -f2- | tr -d ' ')
           [ -n "$url" ] && [ -n "$key" ] || exit 0
           curl -sS -o /dev/null -w "Supabase: %{http_code}\n" "$url/rest/v1/user_data?select=user_id&limit=1" \
-            -H "apikey: $key" -H "Authorization: Bearer $key"
+            -H "apikey: $key"
       - name: Guardar cambios
         run: |
           git config user.name "github-actions[bot]"
