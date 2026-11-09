@@ -12,6 +12,9 @@ final class Cloud: NSObject, ObservableObject, ASWebAuthenticationPresentationCo
 
     @Published private(set) var email: String? = UserDefaults.standard.string(forKey: "cloud_email")
     @Published var busy = false
+    /// Result of the last sync, shown under the account in Configuración.
+    @Published var lastError: String?
+    @Published var lastOK: Date?
     var signedIn: Bool { UserDefaults.standard.string(forKey: "cloud_refresh") != nil }
     var configured: Bool { !CloudConfig.url.isEmpty && !CloudConfig.key.isEmpty }
 
@@ -28,6 +31,10 @@ final class Cloud: NSObject, ObservableObject, ASWebAuthenticationPresentationCo
         super.init()
         NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             self?.refresh()
+        }
+        // while the app is in front: look for changes from other devices every 20 s (a tiny request)
+        Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+            if NSApp.isActive { self?.refresh() }
         }
     }
 
@@ -88,24 +95,42 @@ final class Cloud: NSObject, ObservableObject, ASWebAuthenticationPresentationCo
         dirty = true
         pushTimer?.invalidate()
         pushTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { [weak self] _ in
-            self?.queue.async { try? self?.push() }
+            self?.queue.async { self?.record { try self?.push() } }
         }
     }
 
     func refresh() {
         guard signedIn, configured else { return }
-        queue.async { [weak self] in try? self?.pullOrPush() }
+        queue.async { [weak self] in self?.record { try self?.pullOrPush() } }
     }
 
     func syncNow(done: @escaping (String?) -> Void) {
         queue.async { [weak self] in
             var err: String?
-            do { try self?.pullOrPush() } catch { err = error.localizedDescription }
+            err = self?.record { try self?.pullOrPush() }
             DispatchQueue.main.async { done(err) }
         }
     }
 
+    @discardableResult
+    private func record(_ block: () throws -> Void) -> String? {
+        do {
+            try block()
+            DispatchQueue.main.async { self.lastOK = Date(); self.lastError = nil }
+            return nil
+        } catch {
+            let m = error.localizedDescription
+            DispatchQueue.main.async { self.lastError = m }
+            return m
+        }
+    }
+
     private func pullOrPush() throws {
+        // cheap check first: only the date of the last save
+        if !dirty {
+            let head = try json(request("/rest/v1/user_data?select=updated_at", method: "GET", auth: true)) as? [[String: Any]]
+            if let s = head?.first?["updated_at"] as? String, s == d.string(forKey: "cloud_stamp") { return }
+        }
         let remote = try fetch()
         let stamp = d.string(forKey: "cloud_stamp") ?? ""
         guard let r = remote else { try push(); return }

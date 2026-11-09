@@ -337,7 +337,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        if (::cloud.isInitialized) cloud.refresh()
+        if (::cloud.isInitialized) cloud.startWatching()
         if (player != null) return
         val w = vod
         when {
@@ -399,6 +399,7 @@ class MainActivity : Activity() {
         super.onStop()
         saveVodProgress()
         cloud.flush()
+        cloud.stopWatching()
         releasePlayer()
     }
 
@@ -2821,7 +2822,10 @@ class MainActivity : Activity() {
             cloud.signIn(this) { error ->
                 when {
                     error != null -> Toast.makeText(this, error, Toast.LENGTH_LONG).show()
-                    cloud.signedIn -> Toast.makeText(this, "Sesión iniciada: ${cloud.email}. Tus listas ya se sincronizan.", Toast.LENGTH_LONG).show()
+                    cloud.signedIn -> {
+                        cloud.startWatching()
+                        Toast.makeText(this, "Sesión iniciada: ${cloud.email}. Tus listas ya se sincronizan.", Toast.LENGTH_LONG).show()
+                    }
                 }
             }
             return
@@ -4150,6 +4154,20 @@ class MainActivity : Activity() {
             setOnFocusChangeListener { _, has -> if (has) { switchTop(2); scrollCatalogTop() } }
         }
         topHead.addView(topToggleDownloads)
+        // left/right between "Seguir viendo", "Ver más tarde" and "Descargas" (the list sent the focus
+        // down to the posters instead)
+        val toggles = listOf(topToggleContinue, topToggleLater, topToggleDownloads)
+        toggles.forEach { t ->
+            t.setOnKeyListener { v, keyCode, event ->
+                if (keyCode != KeyEvent.KEYCODE_DPAD_RIGHT && keyCode != KeyEvent.KEYCODE_DPAD_LEFT) return@setOnKeyListener false
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    val shown = toggles.filter { it.visibility == View.VISIBLE }
+                    val i = shown.indexOf(v)
+                    shown.getOrNull(if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) i + 1 else i - 1)?.requestFocus()
+                }
+                true
+            }
+        }
         continueBox.addView(topHead, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(4); bottomMargin = dp(8) })
         continueRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         continueBox.addView(continueRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })

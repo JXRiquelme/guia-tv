@@ -144,7 +144,26 @@ class Cloud(private val prefs: SharedPreferences, private val onRemoteApplied: (
         main.postDelayed(pushTask, 2000)
     }
 
+    // ------------------------------------------------------------ watching for other devices
+
+    private val poll = object : Runnable {
+        override fun run() {
+            refresh()
+            main.postDelayed(this, 20_000)
+        }
+    }
+
+    /** While the app is on screen: look for changes from other devices every 20 s (a tiny request). */
+    fun startWatching() { main.removeCallbacks(poll); if (signedIn && configured) main.post(poll) }
+    fun stopWatching() = main.removeCallbacks(poll)
+
     private fun pullOrPush() {
+        // cheap check first: only the date of the last save
+        if (!dirty) {
+            val head = JSONArray(get("/rest/v1/user_data?select=updated_at"))
+            val remoteStamp = head.optJSONObject(0)?.optString("updated_at")
+            if (remoteStamp != null && remoteStamp == prefs.getString("cloud_stamp", "")) return
+        }
         val remote = fetch()
         val stamp = prefs.getString("cloud_stamp", "") ?: ""
         when {

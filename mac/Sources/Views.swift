@@ -1100,6 +1100,8 @@ struct GoogleAccountRow: View {
             Text("Cuenta de Google").font(.system(size: 15, weight: .semibold))
             if let mail = cloud.email, cloud.signedIn {
                 Text("Conectado como \(mail)").font(.system(size: 13)).foregroundColor(Theme.muted)
+                if let e = cloud.lastError { Text("Último error: \(e)").font(.system(size: 13)).foregroundColor(.orange) }
+                else if let ok = cloud.lastOK { Text("Última sincronización: \(ok.formatted(date: .omitted, time: .shortened))").font(.system(size: 13)).foregroundColor(Theme.muted) }
                 HStack {
                     Button("Sincronizar ahora") {
                         cloud.syncNow { e in message = e.map { "No se pudo sincronizar: \($0)" } ?? "Sincronizado" }
