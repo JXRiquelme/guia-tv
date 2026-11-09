@@ -20,8 +20,8 @@ android {
         applicationId = "cl.jxr.aeriolite"
         minSdk = 21
         targetSdk = 35
-        versionCode = 48
-        versionName = "1.44"
+        versionCode = 49
+        versionName = "1.45"
         // ARM only (phones and Android TV boxes): keeps the FFmpeg part small
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
         buildConfigField("String", "SUPABASE_URL", cloudValue("supabase_url"))

@@ -398,6 +398,7 @@ class MainActivity : Activity() {
     override fun onStop() {
         super.onStop()
         saveVodProgress()
+        cloud.flush()
         releasePlayer()
     }
 
@@ -1919,6 +1920,7 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- movies & series browser
 
     private fun openBrowser(series: Boolean) {
+        cloud.refresh()
         if (xtream() == null) {
             pendingSeries = series
             showAccount(null)
@@ -2824,10 +2826,10 @@ class MainActivity : Activity() {
             }
             return
         }
-        showPicker("Cuenta de Google\n${cloud.email}\nSe sincronizan Seguir viendo, el historial, Ver más tarde y la opción de cada canal.",
+        showPicker("Cuenta de Google\n${cloud.email}\n${cloud.status}",
             listOf("Sincronizar ahora", "Cerrar sesión"), -1) { pick ->
             when (pick) {
-                0 -> cloud.syncNow { e -> Toast.makeText(this, e?.let { "No se pudo sincronizar: $it" } ?: "Sincronizado", Toast.LENGTH_SHORT).show() }
+                0 -> cloud.syncNow { e -> Toast.makeText(this, e?.let { "No se pudo sincronizar: $it" } ?: "Sincronizado", Toast.LENGTH_LONG).show() }
                 1 -> {
                     cloud.signOut()
                     Toast.makeText(this, "Sesión cerrada. Tus listas siguen guardadas en este equipo.", Toast.LENGTH_LONG).show()

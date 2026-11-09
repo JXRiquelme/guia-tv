@@ -97,23 +97,51 @@ class Cloud(private val prefs: SharedPreferences, private val onRemoteApplied: (
     /** App opened or came back: take what other devices saved, or push what is pending here. */
     fun refresh() {
         if (!signedIn || !configured) return
-        io.execute { runCatching { pullOrPush() } }
+        io.execute { record { pullOrPush() } }
     }
 
     fun syncNow(done: (String?) -> Unit) {
         io.execute {
-            val error = try { pullOrPush(); null } catch (e: Exception) { e.message ?: "Error" }
+            val error = record { pullOrPush() }
             main.post { done(error) }
         }
     }
 
-    private val pushTask = Runnable { io.execute { runCatching { push() } } }
+    /** Pending change: send it now (app going to the background). */
+    fun flush() {
+        if (!dirty || !signedIn || !configured) return
+        main.removeCallbacks(pushTask)
+        io.execute { record { push() } }
+    }
+
+    /** "Última sincronización …" for the account screen. */
+    val status: String get() {
+        val at = prefs.getLong("cloud_last_ok", 0)
+        val err = prefs.getString("cloud_last_error", null)
+        val ago = if (at == 0L) "nunca" else {
+            val s = (System.currentTimeMillis() - at) / 1000
+            when { s < 60 -> "hace $s s"; s < 3600 -> "hace ${s / 60} min"; else -> "hace ${s / 3600} h" }
+        }
+        return "Última sincronización: $ago" + (err?.let { "\nÚltimo error: $it" } ?: "")
+    }
+
+    private fun record(block: () -> Unit): String? = try {
+        block()
+        prefs.edit().putLong("cloud_last_ok", System.currentTimeMillis()).remove("cloud_last_error").apply()
+        null
+    } catch (e: Exception) {
+        val msg = e.message ?: e.javaClass.simpleName
+        prefs.edit().putString("cloud_last_error", msg).apply()
+        msg
+    }
+
+    private val pushTask = Runnable { io.execute { record { push() } } }
 
     private fun markDirty() {
         dirty = true
         prefs.edit().putBoolean("cloud_dirty", true).apply()
         main.removeCallbacks(pushTask)
-        main.postDelayed(pushTask, 4000)
+        main.postDelayed(pushTask, 2000)
     }
 
     private fun pullOrPush() {
