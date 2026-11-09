@@ -142,14 +142,33 @@ final class Cloud: NSObject, ObservableObject, ASWebAuthenticationPresentationCo
     // MARK: Local <-> cloud format
 
     private func local() -> [String: Any] {
-        let history = (Store.load("history", [Watch].self) ?? []).map { w -> [String: Any] in
-            ["episode": w.episode, "id": w.streamId, "ext": w.ext, "title": w.title, "subtitle": w.subtitle,
-             "poster": w.poster, "seriesId": w.seriesId, "position": Int64(w.position * 1000),
-             "duration": Int64(w.duration * 1000), "updated": Int64(w.updated.timeIntervalSince1970 * 1000)]
+        var history: [[String: Any]] = []
+        for w in Store.load("history", [Watch].self) ?? [] {
+            var o: [String: Any] = [:]
+            o["episode"] = w.episode
+            o["id"] = w.streamId
+            o["ext"] = w.ext
+            o["title"] = w.title
+            o["subtitle"] = w.subtitle
+            o["poster"] = w.poster
+            o["seriesId"] = w.seriesId
+            o["position"] = Int64(w.position * 1000)
+            o["duration"] = Int64(w.duration * 1000)
+            o["updated"] = Int64(w.updated.timeIntervalSince1970 * 1000)
+            history.append(o)
         }
-        let later = (Store.load("later", [VodItem].self) ?? []).map { v -> [String: Any] in
-            ["series": v.series, "id": v.streamId, "title": v.title, "poster": v.poster, "ext": v.ext,
-             "year": v.year, "rating": v.rating, "cat": v.categoryId]
+        var later: [[String: Any]] = []
+        for v in Store.load("later", [VodItem].self) ?? [] {
+            var o: [String: Any] = [:]
+            o["series"] = v.series
+            o["id"] = v.streamId
+            o["title"] = v.title
+            o["poster"] = v.poster
+            o["ext"] = v.ext
+            o["year"] = v.year
+            o["rating"] = v.rating
+            o["cat"] = v.categoryId
+            later.append(o)
         }
         var options: [String: Int] = [:]
         for (k, v) in d.dictionaryRepresentation() where k.hasPrefix("alt_") {
