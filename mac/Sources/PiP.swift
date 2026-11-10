@@ -22,23 +22,31 @@ final class PiPController: NSObject {
         return NSClassFromString("PIPViewController") as? NSViewController.Type
     }()
 
-    var supported: Bool { Self.pipClass != nil }
+    var supported: Bool {
+        guard let cls = Self.pipClass else { return false }
+        return cls.instancesRespond(to: NSSelectorFromString("presentViewControllerAsPictureInPicture:"))
+    }
+
+    /// Sets a property of the system panel only if this macOS has it (an unknown key would throw).
+    private func set(_ pip: NSViewController, _ key: String, _ value: Any?) {
+        let setter = "set" + key.prefix(1).uppercased() + key.dropFirst() + ":"
+        if pip.responds(to: NSSelectorFromString(setter)) { pip.setValue(value, forKey: key) }
+    }
 
     func toggle(window: NSWindow) {
         if active { stop() } else { start(window: window) }
     }
 
     func start(window: NSWindow) {
-        guard !active, let cls = Self.pipClass, let video = VideoNSView.current else { return }
+        guard !active, supported, let cls = Self.pipClass, let video = VideoNSView.current else { return }
         self.window = window
         let canvas = video.canvas
 
         let pip = cls.init(nibName: nil, bundle: nil)
-        pip.setValue(self, forKey: "delegate")
-        pip.setValue("AerioTV Lite", forKey: "name")
-        pip.setValue(true, forKey: "userCanResize")
-        pip.setValue(!MPV.shared.paused, forKey: "playing")
-        pip.setValue(NSValue(size: aspect()), forKey: "aspectRatio")
+        set(pip, "delegate", self)
+        set(pip, "userCanResize", true)
+        set(pip, "playing", !MPV.shared.paused)
+        set(pip, "aspectRatio", NSValue(size: aspect()))
 
         // the same video view (and its renderer) moves into the floating panel
         let holder = NSViewController()
@@ -51,7 +59,11 @@ final class PiPController: NSObject {
         active = true
         pip.perform(NSSelectorFromString("presentViewControllerAsPictureInPicture:"), with: holder)
         onStateChange?(true)
-        window.orderOut(nil)
+        // hide the window only if the video really went to the floating panel
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak window] in
+            guard let self = self, self.active else { return }
+            if let w = canvas.window, w !== window { window?.orderOut(nil) } else { self.restore() }
+        }
     }
 
     /// Back to the window (Dock icon, menu, or the panel's own button).
@@ -74,9 +86,9 @@ final class PiPController: NSObject {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         // the panel animates back into the video's place
-        pip.setValue(window, forKey: "replacementWindow")
+        set(pip, "replacementWindow", window)
         if let video = VideoNSView.current {
-            pip.setValue(NSValue(rect: video.convert(video.bounds, to: nil)), forKey: "replacementRect")
+            set(pip, "replacementRect", NSValue(rect: video.convert(video.bounds, to: nil)))
         }
     }
 
@@ -103,16 +115,16 @@ final class PiPController: NSObject {
 
     @objc func pipActionPlay(_ pip: NSViewController) {
         MPV.shared.setPaused(false)
-        pip.setValue(true, forKey: "playing")
+        set(pip, "playing", true)
     }
 
     @objc func pipActionPause(_ pip: NSViewController) {
         MPV.shared.setPaused(true)
-        pip.setValue(false, forKey: "playing")
+        set(pip, "playing", false)
     }
 
     @objc func pipActionStop(_ pip: NSViewController) {
         MPV.shared.setPaused(true)
-        pip.setValue(false, forKey: "playing")
+        set(pip, "playing", false)
     }
 }

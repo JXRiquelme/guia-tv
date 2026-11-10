@@ -233,13 +233,13 @@ final class VideoLayer: CAOpenGLLayer {
     }
 
     override func copyCGLContext(forPixelFormat pf: CGLPixelFormatObj) -> CGLContextObj {
-        let ctx = super.copyCGLContext(forPixelFormat: pf)
-        if let old = glContext, old != ctx, let rc = renderContext {
-            CGLSetCurrentContext(old)
-            mpv_render_context_set_update_callback(rc, nil, nil)
-            mpv_render_context_free(rc)
-            renderContext = nil
+        // Moving to the PiP panel (another window) asks for a context again: hand back the same one,
+        // so mpv's renderer — tied to it — keeps working with no restart (freeing it here froze the app).
+        if let existing = glContext {
+            CGLRetainContext(existing)
+            return existing
         }
+        let ctx = super.copyCGLContext(forPixelFormat: pf)
         glContext = ctx
         VideoLayer.current = self
         CGLSetCurrentContext(ctx)
