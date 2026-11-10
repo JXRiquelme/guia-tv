@@ -59,17 +59,65 @@ struct VideoView: NSViewRepresentable {
     func updateNSView(_ nsView: VideoNSView, context: Context) {}
 }
 
+/// Posters and logos stay in memory (and on disk via URLCache): scrolling back shows them at once
+/// instead of downloading them again.
+final class ImageCache {
+    static let shared = ImageCache()
+    let memory: NSCache<NSString, NSImage> = {
+        let c = NSCache<NSString, NSImage>()
+        c.countLimit = 1500
+        c.totalCostLimit = 300 * 1024 * 1024
+        return c
+    }()
+    let session: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.urlCache = URLCache(memoryCapacity: 64 * 1024 * 1024, diskCapacity: 500 * 1024 * 1024)
+        cfg.requestCachePolicy = .returnCacheDataElseLoad
+        cfg.httpMaximumConnectionsPerHost = 6
+        return URLSession(configuration: cfg)
+    }()
+    private var waiting: [String: [(NSImage?) -> Void]] = [:]
+
+    func image(_ url: String) -> NSImage? { memory.object(forKey: url as NSString) }
+
+    func load(_ url: String, done: @escaping (NSImage?) -> Void) {
+        if let img = image(url) { done(img); return }
+        guard let u = URL(string: url) else { done(nil); return }
+        if waiting[url] != nil { waiting[url]?.append(done); return }
+        waiting[url] = [done]
+        session.dataTask(with: u) { [weak self] data, _, _ in
+            let img = data.flatMap { NSImage(data: $0) }
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let img = img { self.memory.setObject(img, forKey: url as NSString, cost: data?.count ?? 0) }
+                let calls = self.waiting.removeValue(forKey: url) ?? []
+                calls.forEach { $0(img) }
+            }
+        }.resume()
+    }
+}
+
 struct RemoteImage: View {
     let url: String
     var mode: ContentMode = .fit
+    @State private var image: NSImage?
+
     var body: some View {
-        if let u = URL(string: url), !url.isEmpty {
-            AsyncImage(url: u) { phase in
-                if let img = phase.image { img.resizable().aspectRatio(contentMode: mode) } else { Color.clear }
+        Group {
+            if let img = image ?? ImageCache.shared.image(url) {
+                Image(nsImage: img).resizable().aspectRatio(contentMode: mode)
+            } else {
+                Color.clear
             }
-        } else {
-            Color.clear
         }
+        .onAppear(perform: fetch)
+        .onChange(of: url) { _ in image = nil; fetch() }
+    }
+
+    private func fetch() {
+        guard !url.isEmpty, image == nil, ImageCache.shared.image(url) == nil else { return }
+        let wanted = url
+        ImageCache.shared.load(wanted) { img in if wanted == url { image = img } }
     }
 }
 
@@ -251,9 +299,9 @@ struct SidePanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(spacing: 6) {
                 TopTabs(active: .live)
-                Spacer()
+                Spacer(minLength: 0)
                 IconButton(system: "magnifyingglass") { searching.toggle(); if !searching { app.panelQuery = "" } }
                 IconButton(system: "line.3.horizontal.decrease") { app.filterKind = .live }
                 IconButton(system: "gearshape") { app.showSettings = true }
@@ -282,6 +330,7 @@ struct SidePanel: View {
             }
             Text("↑↓ elegir · Enter ver · Esc cerrar · ↑↓ en pantalla cambia canal · → guía")
                 .font(.system(size: 12)).foregroundColor(Theme.hint)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 34)
         .frame(maxHeight: .infinity)
@@ -612,11 +661,15 @@ struct BrowserView: View {
                         ForEach(dls.prefix(5)) { d in PosterTile(entry: .download(d)) }
                     }
                     Button { app.topMode = mode; app.showAllTop() } label: {
-                        VStack {
-                            Text("Ver todo\n(\(count))").font(.system(size: 16, weight: .bold))
-                                .multilineTextAlignment(.center).foregroundColor(.white)
-                                .frame(maxWidth: .infinity).aspectRatio(2 / 3, contentMode: .fit)
-                                .background(Theme.card).cornerRadius(8)
+                        // same size as a poster
+                        VStack(spacing: 5) {
+                            ZStack {
+                                Theme.card
+                                Text("Ver todo\n(\(count))").font(.system(size: 16, weight: .bold))
+                                    .multilineTextAlignment(.center).foregroundColor(.white)
+                            }
+                            .aspectRatio(2 / 3, contentMode: .fit)
+                            .cornerRadius(8)
                             Spacer(minLength: 0)
                         }
                     }.buttonStyle(.plain)

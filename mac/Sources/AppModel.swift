@@ -42,7 +42,7 @@ final class AppModel: ObservableObject {
     @Published var panelOffset: CGFloat = 0
     /// 0 = guide fully open; positive = pushed out to the right.
     @Published var epgOffset: CGFloat = 0
-    static let panelWidth: CGFloat = 400
+    static let panelWidth: CGFloat = 480
     var epgWidth: CGFloat { (NSApp.windows.first { $0.isVisible }?.contentView?.bounds.width ?? 1280) * 0.72 }
     @Published var epgRow = 0
     @Published var epgCursor = Date()
