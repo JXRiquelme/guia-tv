@@ -56,6 +56,7 @@ final class PiPController: NSObject, AVPictureInPictureControllerDelegate, AVPic
         mpv_render_context_create(&swContext, mpv.handle, &params)
         free(api)
         guard swContext != nil else { cleanup(); return }
+        reattachVideo()
 
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.renderFrame(force: false) }
         renderFrame(force: true)
@@ -147,10 +148,21 @@ final class PiPController: NSObject, AVPictureInPictureControllerDelegate, AVPic
         hostView = nil
         MPV.shared.setProperty("hwdec", "auto-safe")
         VideoLayer.current?.restoreRenderer()
+        reattachVideo()
+        VideoLayer.current?.setNeedsDisplay()
         if active {
             active = false
             onStateChange?(false)
         }
+    }
+
+    /// Newer libmpv drops the video track when its renderer is swapped (black picture in PiP and
+    /// back in the window): select the same track again so it draws on the new renderer.
+    private func reattachVideo() {
+        let mpv = MPV.shared
+        let vid = mpv.getString("vid") ?? "auto"
+        mpv.setProperty("vid", "no")
+        mpv.setProperty("vid", vid == "no" || vid.isEmpty ? "auto" : vid)
     }
 
     // MARK: AVPictureInPictureControllerDelegate
