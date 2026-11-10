@@ -234,6 +234,12 @@ final class VideoLayer: CAOpenGLLayer {
 
     override func copyCGLContext(forPixelFormat pf: CGLPixelFormatObj) -> CGLContextObj {
         let ctx = super.copyCGLContext(forPixelFormat: pf)
+        if let old = glContext, old != ctx, let rc = renderContext {
+            CGLSetCurrentContext(old)
+            mpv_render_context_set_update_callback(rc, nil, nil)
+            mpv_render_context_free(rc)
+            renderContext = nil
+        }
         glContext = ctx
         VideoLayer.current = self
         CGLSetCurrentContext(ctx)
@@ -324,7 +330,8 @@ final class VideoLayer: CAOpenGLLayer {
     func resetFirstFrame() { firstFrameReported = false }
 }
 
-final class VideoNSView: NSView {
+/// The view that draws the video. It can leave its place for picture in picture and come back.
+final class VideoCanvas: NSView {
     let videoLayer = VideoLayer()
 
     override init(frame: NSRect) {
@@ -333,6 +340,7 @@ final class VideoNSView: NSView {
         wantsLayer = true
         videoLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
         layerContentsRedrawPolicy = .duringViewResize
+        autoresizingMask = [.width, .height]
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -343,6 +351,40 @@ final class VideoNSView: NSView {
         videoLayer.setNeedsDisplay()
     }
 
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        videoLayer.setNeedsDisplay()
+    }
+
     // Clicks go to the SwiftUI overlay above, not here.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// The video's place in the window (SwiftUI keeps this one; the canvas inside may float in PiP).
+final class VideoNSView: NSView {
+    static weak var current: VideoNSView?
+    let canvas = VideoCanvas(frame: .zero)
+    var videoLayer: VideoLayer { canvas.videoLayer }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+        VideoNSView.current = self
+        attach()
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Puts the canvas (back) in this view.
+    func attach() {
+        if canvas.superview !== self {
+            canvas.removeFromSuperview()
+            canvas.frame = bounds
+            addSubview(canvas)
+        }
+        canvas.videoLayer.setNeedsDisplay()
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
