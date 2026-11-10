@@ -1,10 +1,10 @@
-Actualizado: 2026-11-09 22:21 UTC
+Actualizado: 2026-11-10 07:17 UTC
 
-fuente cl: 2794 programas usados
-fuente srv: 6560 programas usados
-fuente ar: 426 programas usados
-fuente dtv: 153 programas usados
-fuente es: 151 programas usados
+fuente cl: 2845 programas usados
+fuente srv: 6533 programas usados
+fuente ar: 416 programas usados
+fuente dtv: 156 programas usados
+fuente es: 108 programas usados
 canal13          cl / Canal.13.de.Chile.cl (ajuste +0 min)
 t13              srv / C13T13 (ajuste +0 min)
 13c              srv / C13CABH (ajuste +0 min)
@@ -55,7 +55,7 @@ espn3            cl / Canal.ESPN.3.(Chile).cl (ajuste +0 min)
 dsports          srv / SPOARHD (ajuste +0 min)
 dsports2         dtv / DSPORTS.2.HD.dtvsp (ajuste +0 min)
 dsportsplus      dtv / DSPORTS.+.HD.dtvsp (ajuste +0 min)
-dazn1            es / DAZN.1.es (ajuste +0 min)
+dazn1            srv / DAZN1HD (ajuste +0 min)
 dazn2            srv / DAZN2HD (ajuste +0 min)
 dazn3            sin guía
 dazn4            sin guía
