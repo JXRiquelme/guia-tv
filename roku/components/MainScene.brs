@@ -1,14 +1,17 @@
-' AerioTV Lite para Roku: películas y series con los datos del servicio (servidor, usuario, contraseña).
+' AerioTV VOD para Roku: películas y series con los datos del servicio (servidor, usuario, contraseña).
 ' Todo se pide de a poco (categorías, luego los títulos de una categoría, luego los capítulos de una
 ' serie), así nunca se descarga el catálogo completo.
 
 sub init()
+    ' fixed name: reinstalling the app keeps the account, "Continuar viendo" and "Ver más tarde"
     m.reg = CreateObject("roRegistrySection", "aeriovod")
     m.login = m.top.findNode("login")
     m.loginList = m.top.findNode("loginList")
     m.loginStatus = m.top.findNode("loginStatus")
     m.home = m.top.findNode("home")
-    m.header = m.top.findNode("header")
+    m.tabMark = m.top.findNode("tabMark")
+    m.tabMovies = m.top.findNode("tabMovies")
+    m.tabSeries = m.top.findNode("tabSeries")
     m.cats = m.top.findNode("cats")
     m.grid = m.top.findNode("grid")
     m.gridStatus = m.top.findNode("gridStatus")
@@ -19,10 +22,17 @@ sub init()
     m.seasons = m.top.findNode("seasons")
     m.episodes = m.top.findNode("episodes")
     m.video = m.top.findNode("video")
+    m.osd = m.top.findNode("osd")
+    m.osdTitle = m.top.findNode("osdTitle")
+    m.osdState = m.top.findNode("osdState")
+    m.osdBar = m.top.findNode("osdBar")
+    m.osdTime = m.top.findNode("osdTime")
+    m.osdLeft = m.top.findNode("osdLeft")
     m.toast = m.top.findNode("toast")
     m.toastBg = m.top.findNode("toastBg")
     m.catTimer = m.top.findNode("catTimer")
     m.toastTimer = m.top.findNode("toastTimer")
+    m.osdTimer = m.top.findNode("osdTimer")
 
     m.loginList.observeField("itemSelected", "onLoginSelected")
     m.cats.observeField("itemFocused", "onCatFocused")
@@ -35,10 +45,12 @@ sub init()
     m.video.observeField("position", "onVideoPosition")
     m.catTimer.observeField("fire", "onCatTimer")
     m.toastTimer.observeField("fire", "hideToast")
+    m.osdTimer.observeField("fire", "onOsdTick")
 
     m.server = readReg("server")
     m.user = readReg("user")
     m.pass = readReg("pass")
+    if m.server = "" or m.user = "" or m.pass = "" then loadDefaults()
     m.mode = readReg("mode")
     if m.mode <> "series" then m.mode = "movies"
     m.cache = {}
@@ -47,12 +59,27 @@ sub init()
     m.tasks = {}
     m.returnTo = "home"
     m.lastSaved = 0
+    m.tabsFocused = false
+    m.osdHideAt = 0
+    m.clock = CreateObject("roTimespan")
 
     if m.server <> "" and m.user <> "" and m.pass <> "" then
         showHome()
     else
         showLogin("")
     end if
+end sub
+
+' The installed package may carry the account (pkg:/source/account.json, never published), so a
+' fresh install starts signed in.
+sub loadDefaults()
+    raw = ReadAsciiFile("pkg:/source/account.json")
+    if raw = "" then return
+    a = ParseJson(raw)
+    if type(a) <> "roAssociativeArray" then return
+    if a.server <> invalid then m.server = a.server
+    if a.user <> invalid then m.user = a.user
+    if a.pass <> invalid then m.pass = a.pass
 end sub
 
 ' ------------------------------------------------------------------ sign in
@@ -176,7 +203,7 @@ sub showHome()
     m.seriesView.visible = false
     m.video.visible = false
     m.home.visible = true
-    if m.mode = "series" then m.header.text = "Series" else m.header.text = "Películas"
+    paintTabs()
     m.grid.content = CreateObject("roSGNode", "ContentNode")
     m.gridStatus.text = "Cargando categorías…"
     loading = CreateObject("roSGNode", "ContentNode")
@@ -184,8 +211,34 @@ sub showHome()
     n.title = "Cargando…"
     m.cats.content = loading
     m.catIds = [""]
-    m.cats.setFocus(true)
+    if m.tabsFocused then m.top.setFocus(true) else m.cats.setFocus(true)
     if m.mode = "series" then runTask("seriescats", "", "onCats") else runTask("vodcats", "", "onCats")
+end sub
+
+sub paintTabs()
+    active = m.tabMovies
+    other = m.tabSeries
+    if m.mode = "series" then
+        active = m.tabSeries
+        other = m.tabMovies
+    end if
+    m.tabMark.translation = active.translation
+    active.color = "0xFFFFFFFF"
+    other.color = "0x8A93AFFF"
+    if m.tabsFocused then m.tabMark.color = "0x2563EBFF" else m.tabMark.color = "0x2563EB55"
+end sub
+
+sub focusTabs(on as boolean)
+    m.tabsFocused = on
+    paintTabs()
+    if on then m.top.setFocus(true) else m.cats.setFocus(true)
+end sub
+
+sub switchMode(mode as string)
+    if mode = m.mode then return
+    m.mode = mode
+    writeReg("mode", m.mode)
+    showHome()
 end sub
 
 sub onCats(ev as object)
@@ -197,12 +250,11 @@ sub onCats(ev as object)
     r = t.result
     if r = invalid then return
     root = CreateObject("roSGNode", "ContentNode")
-    m.catIds = []
-    if historyFor(m.mode).Count() > 0 then
-        n = root.createChild("ContentNode")
-        n.title = "▶  Seguir viendo"
-        m.catIds.push("__continue")
-    end if
+    n = root.createChild("ContentNode")
+    n.title = "▶  Continuar viendo"
+    n = root.createChild("ContentNode")
+    n.title = "★  Ver más tarde"
+    m.catIds = ["__continue", "__later"]
     for i = 0 to r.getChildCount() - 1
         c = r.getChild(i)
         n = root.createChild("ContentNode")
@@ -211,9 +263,16 @@ sub onCats(ev as object)
     end for
     m.cats.content = root
     m.gridStatus.text = ""
-    m.cats.jumpToItem = 0
-    m.cats.setFocus(true)
-    loadCategory(0)
+    ' open on "Continuar viendo" when there is something to continue, else on the first category
+    start = 0
+    if historyFor(m.mode).Count() = 0 then
+        start = 2
+        if laterFor(m.mode).Count() > 0 then start = 1
+        if start >= m.catIds.Count() then start = 0
+    end if
+    m.cats.jumpToItem = start
+    if not m.tabsFocused then m.cats.setFocus(true)
+    loadCategory(start)
 end sub
 
 sub onCatFocused()
@@ -236,6 +295,10 @@ sub loadCategory(i as integer)
     m.currentCat = id
     if id = "__continue" then
         setGrid(continueContent(), "Aún no has visto nada.")
+        return
+    end if
+    if id = "__later" then
+        setGrid(laterContent(), "Vacío. En cualquier título pulsa ✱ y elige «Agregar a Ver más tarde».")
         return
     end if
     key = m.mode + ":" + id
@@ -274,6 +337,17 @@ sub setGrid(content as object, emptyText as string)
     if content.getChildCount() = 0 then m.gridStatus.text = emptyText else m.gridStatus.text = ""
 end sub
 
+sub refreshSpecialCategory()
+    if m.currentCat = "__continue" then setGrid(continueContent(), "Aún no has visto nada.")
+    if m.currentCat = "__later" then setGrid(laterContent(), "Vacío. En cualquier título pulsa ✱ y elige «Agregar a Ver más tarde».")
+end sub
+
+function focusedGridItem() as dynamic
+    c = m.grid.content
+    if c = invalid then return invalid
+    return c.getChild(m.grid.itemFocused)
+end function
+
 sub onGridSelected()
     c = m.grid.content
     if c = invalid then return
@@ -299,8 +373,7 @@ sub openSeries(seriesId as string, title as string, poster as string)
     m.seriesPlot.text = "Cargando capítulos…"
     m.seriesPoster.uri = poster
     m.seriesNode = invalid
-    empty = CreateObject("roSGNode", "ContentNode")
-    m.seasons.content = empty
+    m.seasons.content = CreateObject("roSGNode", "ContentNode")
     m.episodes.content = CreateObject("roSGNode", "ContentNode")
     m.seasons.setFocus(true)
     runTask("info", seriesId, "onSeriesInfo")
@@ -317,7 +390,10 @@ sub onSeriesInfo(ev as object)
     if r = invalid then return
     m.seriesNode = r
     m.seriesPlot.text = r.plot
-    if r.cover <> "" and m.seriesCover = "" then m.seriesPoster.uri = r.cover
+    if r.cover <> "" and m.seriesCover = "" then
+        m.seriesCover = r.cover
+        m.seriesPoster.uri = r.cover
+    end if
     if r.getChildCount() = 0 then
         m.seriesPlot.text = "Esta serie no tiene capítulos disponibles."
         return
@@ -375,8 +451,12 @@ sub startCandidate()
     m.seriesView.visible = false
     m.video.content = content
     m.video.visible = true
-    m.video.setFocus(true)
+    ' the keys come to the scene: our own controls (the Video node's own UI is off)
+    m.top.setFocus(true)
     m.video.control = "play"
+    m.osdTitle.text = m.playing.title
+    showOsd()
+    m.osdTimer.control = "start"
 end sub
 
 ' The service may give movies as .ts, which Roku can't play directly: try the same title as HLS,
@@ -418,10 +498,15 @@ sub onVideoState()
             closeVideo(false)
             showToast("No se pudo reproducir este título. " + msg)
         end if
+        return
     else if state = "finished" then
         removeHistory(histKey(m.playing))
         closeVideo(false)
+        return
+    else if state = "buffering" or state = "paused" then
+        showOsd()
     end if
+    updateOsd()
 end sub
 
 sub onVideoPosition()
@@ -432,34 +517,149 @@ sub onVideoPosition()
     end if
 end sub
 
+sub seekBy(delta as integer)
+    if m.video.duration <= 0 then return
+    target = m.video.position + delta
+    if target < 0 then target = 0
+    if target > m.video.duration - 5 then target = m.video.duration - 5
+    m.video.seek = target
+    sign = "+"
+    if delta < 0 then sign = "−"
+    showToast(sign + Abs(delta).ToStr() + " s  ·  " + clock(target))
+    showOsd()
+end sub
+
+sub togglePause()
+    if m.video.state = "paused" then
+        m.video.control = "resume"
+    else if m.video.state = "playing" or m.video.state = "buffering" then
+        m.video.control = "pause"
+    end if
+    showOsd()
+end sub
+
+sub showOsd()
+    m.osd.visible = true
+    m.osdHideAt = m.clock.TotalSeconds() + 5
+    updateOsd()
+end sub
+
+sub onOsdTick()
+    if not m.video.visible then
+        m.osdTimer.control = "stop"
+        return
+    end if
+    updateOsd()
+    if m.osd.visible and m.video.state = "playing" and m.clock.TotalSeconds() >= m.osdHideAt then m.osd.visible = false
+end sub
+
+sub updateOsd()
+    if not m.osd.visible then return
+    dur = m.video.duration
+    st = m.video.state
+    stateText = ""
+    if st = "buffering" then stateText = "Cargando…"
+    if st = "paused" then stateText = "En pausa"
+    m.osdState.text = stateText
+    at = m.video.position
+    m.osdTime.text = clock(at)
+    if dur > 0 then
+        m.osdLeft.text = "−" + clock(dur - at) + "  ·  " + clock(dur)
+        m.osdBar.width = Int(1760 * at / dur)
+    else
+        m.osdLeft.text = ""
+        m.osdBar.width = 0
+    end if
+end sub
+
 sub closeVideo(save as boolean)
     if save and m.playing <> invalid and m.video.position > 5 then saveHistory(m.video.position, m.video.duration)
     m.video.control = "stop"
     m.video.visible = false
+    m.osd.visible = false
+    m.osdTimer.control = "stop"
     m.playing = invalid
     if m.returnTo = "series" then
         m.seriesView.visible = true
         m.episodes.setFocus(true)
     else
         m.home.visible = true
-        if m.currentCat = "__continue" then setGrid(continueContent(), "Aún no has visto nada.")
+        refreshSpecialCategory()
         m.grid.setFocus(true)
     end if
 end sub
 
-' ------------------------------------------------------------------ "Seguir viendo" (saved on the Roku)
+' ------------------------------------------------------------------ audio and subtitles
+
+sub showPlayerOptions()
+    showMenu("Reproducción", ["Idioma del audio", "Subtítulos", "Cerrar"], ["audio", "subs", "none"])
+end sub
+
+sub showAudioMenu()
+    tracks = m.video.availableAudioTracks
+    if tracks = invalid or tracks.Count() = 0 then
+        showToast("Este título tiene un solo audio.")
+        restoreFocus()
+        return
+    end if
+    labels = []
+    actions = []
+    for each t in tracks
+        name = langName(t.Language)
+        if t.Name <> invalid and t.Name <> "" and t.Name <> t.Language then name = name + " (" + t.Name + ")"
+        if t.Track = m.video.currentAudioTrack then name = "✓ " + name
+        labels.push(name)
+        actions.push("a:" + t.Track)
+    end for
+    showMenu("Idioma del audio", labels, actions)
+end sub
+
+sub showSubtitleMenu()
+    tracks = m.video.availableSubtitleTracks
+    labels = ["Sin subtítulos"]
+    actions = ["s:off"]
+    if tracks <> invalid then
+        for each t in tracks
+            name = langName(t.Language)
+            if t.Description <> invalid and t.Description <> "" then name = name + " (" + t.Description + ")"
+            if m.video.globalCaptionMode = "On" and t.TrackName = m.video.subtitleTrack then name = "✓ " + name
+            labels.push(name)
+            actions.push("s:" + t.TrackName)
+        end for
+    end if
+    if labels.Count() = 1 then
+        showToast("Este título no trae subtítulos.")
+        restoreFocus()
+        return
+    end if
+    showMenu("Subtítulos", labels, actions)
+end sub
+
+function langName(code as dynamic) as string
+    if code = invalid or code = "" then return "Pista"
+    c = LCase(code)
+    names = { spa: "Español", es: "Español", eng: "Inglés", en: "Inglés", por: "Portugués", pt: "Portugués", fra: "Francés", fre: "Francés", fr: "Francés", ita: "Italiano", it: "Italiano", deu: "Alemán", ger: "Alemán", de: "Alemán", jpn: "Japonés", ja: "Japonés", kor: "Coreano", ko: "Coreano", und: "Sin especificar" }
+    if names.DoesExist(c) then return names[c]
+    return code
+end function
+
+' ------------------------------------------------------------------ "Continuar viendo" and "Ver más tarde" (kept on the Roku)
 
 function histKey(it as object) as string
     if it.kind = "episode" then return "e" + it.streamId
     return "m" + it.streamId
 end function
 
-function loadHistory() as object
-    raw = readReg("history")
+function loadList(name as string) as object
+    raw = readReg(name)
     if raw = "" then return []
     h = ParseJson(raw)
     if type(h) <> "roArray" then return []
     return h
+end function
+
+function loadHistory() as object
+    return loadList("history")
 end function
 
 function findHistory(key as string) as dynamic
@@ -500,7 +700,7 @@ function continueContent() as object
     root = CreateObject("roSGNode", "ContentNode")
     for each h in historyFor(m.mode)
         n = root.createChild("ContentNode")
-        n.addFields({ kind: h.kind, streamId: h.id, ext: h.ext, seriesId: h.s })
+        n.addFields({ kind: h.kind, streamId: h.id, ext: h.ext, seriesId: h.s, histKey: h.k })
         n.title = h.t
         label = h.t
         if h.pos > 0 then label = clock(h.pos) + " · " + h.t
@@ -511,42 +711,171 @@ function continueContent() as object
     return root
 end function
 
+' later: movies and whole series
+function laterKey(kind as string, id as string) as string
+    return kind + ":" + id
+end function
+
+function inLater(kind as string, id as string) as boolean
+    key = laterKey(kind, id)
+    for each l in loadList("later")
+        if laterKey(l.kind, l.id) = key then return true
+    end for
+    return false
+end function
+
+function laterFor(mode as string) as object
+    out = []
+    for each l in loadList("later")
+        if (mode = "series" and l.kind = "series") or (mode <> "series" and l.kind = "movie") then out.push(l)
+    end for
+    return out
+end function
+
+sub toggleLater(kind as string, id as string, ext as string, title as string, poster as string)
+    key = laterKey(kind, id)
+    list = []
+    found = false
+    for each l in loadList("later")
+        if laterKey(l.kind, l.id) = key then found = true else list.push(l)
+    end for
+    if found then
+        showToast("Quitado de Ver más tarde")
+    else
+        list.Unshift({ kind: kind, id: id, ext: ext, t: title, p: poster })
+        while list.Count() > 40
+            list.Pop()
+        end while
+        showToast("Agregado a Ver más tarde")
+    end if
+    writeReg("later", FormatJson(list))
+    refreshSpecialCategory()
+end sub
+
+function laterContent() as object
+    root = CreateObject("roSGNode", "ContentNode")
+    for each l in laterFor(m.mode)
+        n = root.createChild("ContentNode")
+        if l.kind = "series" then
+            n.addFields({ kind: "series", streamId: "", ext: "", seriesId: l.id })
+        else
+            n.addFields({ kind: "movie", streamId: l.id, ext: l.ext, seriesId: "" })
+        end if
+        n.title = l.t
+        n.shortDescriptionLine1 = l.t
+        n.hdPosterUrl = l.p
+        n.sdPosterUrl = l.p
+    end for
+    return root
+end function
+
 ' ------------------------------------------------------------------ options (✱ key)
 
 sub showOptions()
-    other = "Ver Series"
-    if m.mode = "series" then other = "Ver Películas"
+    labels = []
+    actions = []
+    if m.home.visible and m.grid.hasFocus() then
+        item = focusedGridItem()
+        if item <> invalid then
+            id = item.streamId
+            kind = "movie"
+            if item.kind = "series" then
+                id = item.seriesId
+                kind = "series"
+            end if
+            if item.kind <> "episode" then
+                if inLater(kind, id) then labels.push("Quitar de Ver más tarde") else labels.push("Agregar a Ver más tarde")
+                actions.push("later")
+            end if
+            if m.currentCat = "__continue" then
+                labels.push("Quitar de Continuar viendo")
+                actions.push("forget")
+            end if
+        end if
+    else if m.seriesView.visible then
+        if inLater("series", m.seriesId) then labels.push("Quitar serie de Ver más tarde") else labels.push("Agregar serie a Ver más tarde")
+        actions.push("laterSeries")
+    end if
+    if m.mode = "series" then labels.push("Ver Películas") else labels.push("Ver Series")
+    actions.push("switch")
+    labels.push("Cambiar servidor o usuario")
+    actions.push("account")
+    labels.push("Cancelar")
+    actions.push("none")
+    showMenu("AerioTV VOD", labels, actions)
+end sub
+
+sub showMenu(title as string, labels as object, actions as object)
     dlg = CreateObject("roSGNode", "StandardMessageDialog")
     if dlg = invalid then dlg = CreateObject("roSGNode", "Dialog")
-    dlg.title = "AerioTV VOD"
-    dlg.buttons = [other, "Cambiar servidor o usuario", "Cancelar"]
-    dlg.observeField("buttonSelected", "onOptionsButton")
-    m.optionsDlg = dlg
+    dlg.title = title
+    dlg.buttons = labels
+    dlg.observeField("buttonSelected", "onMenuButton")
+    m.menuDlg = dlg
+    m.menuActions = actions
     m.top.dialog = dlg
 end sub
 
-sub onOptionsButton()
-    dlg = m.optionsDlg
+sub onMenuButton()
+    dlg = m.menuDlg
     if dlg = invalid then return
-    pick = dlg.buttonSelected
+    action = m.menuActions[dlg.buttonSelected]
     dlg.close = true
-    m.optionsDlg = invalid
-    if pick = 0 then
-        if m.mode = "series" then m.mode = "movies" else m.mode = "series"
-        writeReg("mode", m.mode)
-        showHome()
-    else if pick = 1 then
+    m.menuDlg = invalid
+    if action = invalid then action = "none"
+    if action = "later" then
+        item = focusedGridItem()
+        if item <> invalid then
+            if item.kind = "series" then
+                toggleLater("series", item.seriesId, "", item.title, item.hdPosterUrl)
+            else
+                toggleLater("movie", item.streamId, item.ext, item.title, item.hdPosterUrl)
+            end if
+        end if
+    else if action = "laterSeries" then
+        toggleLater("series", m.seriesId, "", m.seriesName, m.seriesCover)
+    else if action = "forget" then
+        item = focusedGridItem()
+        if item <> invalid then
+            removeHistory(item.histKey)
+            refreshSpecialCategory()
+        end if
+    else if action = "switch" then
+        if m.mode = "series" then switchMode("movies") else switchMode("series")
+        return
+    else if action = "account" then
         showLogin("")
-    else
-        restoreFocus()
+        return
+    else if action = "audio" then
+        showAudioMenu()
+        return
+    else if action = "subs" then
+        showSubtitleMenu()
+        return
+    else if Left(action, 2) = "a:" then
+        m.video.audioTrack = Mid(action, 3)
+    else if action = "s:off" then
+        m.video.globalCaptionMode = "Off"
+    else if Left(action, 2) = "s:" then
+        m.video.subtitleTrack = Mid(action, 3)
+        m.video.globalCaptionMode = "On"
     end if
+    restoreFocus()
 end sub
 
 sub restoreFocus()
-    if m.seriesView.visible then
+    if m.video.visible then
+        m.top.setFocus(true)
+    else if m.seriesView.visible then
         m.episodes.setFocus(true)
     else if m.home.visible then
-        m.cats.setFocus(true)
+        if m.tabsFocused then
+            m.top.setFocus(true)
+        else if m.grid.content <> invalid and m.grid.content.getChildCount() > 0 then
+            m.grid.setFocus(true)
+        else
+            m.cats.setFocus(true)
+        end if
     else if m.login.visible then
         m.loginList.setFocus(true)
     end if
@@ -559,16 +888,44 @@ function onKeyEvent(key as string, press as boolean) as boolean
     if m.video.visible then
         if key = "back" then
             closeVideo(true)
-            return true
+        else if key = "OK" or key = "play" then
+            togglePause()
+        else if key = "left" or key = "replay" then
+            seekBy(-10)
+        else if key = "right" then
+            seekBy(10)
+        else if key = "rewind" then
+            seekBy(-60)
+        else if key = "fastforward" then
+            seekBy(60)
+        else if key = "options" then
+            showPlayerOptions()
+        else
+            showOsd()
         end if
-        return false
+        return true
     end if
     if key = "options" then
         showOptions()
         return true
     end if
     if m.home.visible then
-        if key = "right" and m.cats.hasFocus() then
+        if m.tabsFocused then
+            if key = "left" then
+                switchMode("movies")
+            else if key = "right" then
+                switchMode("series")
+            else if key = "down" or key = "OK" then
+                focusTabs(false)
+            else if key = "back" then
+                return false
+            end if
+            return true
+        end if
+        if key = "up" and (m.cats.hasFocus() or m.grid.hasFocus()) then
+            focusTabs(true)
+            return true
+        else if key = "right" and m.cats.hasFocus() then
             if m.grid.content <> invalid and m.grid.content.getChildCount() > 0 then m.grid.setFocus(true)
             return true
         else if (key = "left" or key = "back") and m.grid.hasFocus() then
@@ -585,6 +942,7 @@ function onKeyEvent(key as string, press as boolean) as boolean
         else if key = "back" then
             m.seriesView.visible = false
             m.home.visible = true
+            refreshSpecialCategory()
             m.grid.setFocus(true)
             return true
         end if
@@ -627,6 +985,7 @@ end sub
 
 function clock(secs as dynamic) as string
     s = Int(secs)
+    if s < 0 then s = 0
     h = Int(s / 3600)
     mi = Int((s Mod 3600) / 60)
     se = s Mod 60
