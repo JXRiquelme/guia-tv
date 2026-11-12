@@ -94,6 +94,7 @@ sub init()
     m.lastSaved = 0
     m.tabsFocused = false
     m.focusEpisodeId = ""
+    m.audioChecked = false
     m.osdHideAt = 0
     m.clock = CreateObject("roTimespan")
 
@@ -1039,6 +1040,7 @@ sub playItem(it as object)
 end sub
 
 sub startCandidate()
+    m.audioChecked = false
     c = m.cands[m.candIdx]
     content = CreateObject("roSGNode", "ContentNode")
     content.url = c.url
@@ -1112,6 +1114,9 @@ sub onVideoState()
         return
     else if state = "buffering" or state = "paused" then
         showOsd()
+    else if state = "playing" and not m.liveMode and not m.audioChecked then
+        m.audioChecked = true
+        checkAudio()
     end if
     updateOsd()
 end sub
@@ -1209,7 +1214,43 @@ sub showPlayerOptions()
         showSignalMenu()
         return
     end if
-    showMenu("Reproducción", ["Idioma del audio", "Subtítulos", "Cerrar"], ["audio", "subs", "none"])
+    showMenu("Reproducción", ["Idioma del audio", "Subtítulos", "¿Sin sonido? Probar otra versión", "Cerrar"], ["audio", "subs", "otherVersion", "none"])
+end sub
+
+' Some titles carry their audio as AAC "LATM", which Roku can't decode: picture without sound.
+' Warn, so it's clear it is the title (it plays fine on the phone, Android TV or Mac).
+sub checkAudio()
+    tracks = m.video.availableAudioTracks
+    bad = (tracks = invalid or tracks.Count() = 0)
+    if not bad then
+        for each t in tracks
+            fmt = ""
+            if t.Format <> invalid then fmt = LCase(t.Format)
+            if Instr(1, fmt, "latm") > 0 or Instr(1, fmt, "mp2") > 0 or Instr(1, fmt, "dts") > 0 or Instr(1, fmt, "opus") > 0 then bad = true
+        end for
+    end if
+    if bad then warnAudio()
+end sub
+
+sub warnAudio()
+    showLongToast("Si no hay sonido: este título trae un audio que el Roku no reproduce. Prueba * → «Probar otra versión», o míralo en el móvil, la TV Android o el Mac.")
+end sub
+
+' the same title from the next address the service offers (.m3u8 / .ts / .mp4 / .mkv), same minute
+sub tryOtherVersion()
+    if m.cands = invalid or m.cands.Count() < 2 then
+        warnAudio()
+        return
+    end if
+    m.resumeAt = m.video.position
+    m.candIdx = m.candIdx + 1
+    if m.candIdx >= m.cands.Count() then
+        m.candIdx = 0
+        warnAudio()
+    else
+        showToast("Probando otra versión del título...")
+    end if
+    startCandidate()
 end sub
 
 sub showAudioMenu()
@@ -1466,6 +1507,9 @@ sub onMenuButton()
     else if action = "audio" then
         showAudioMenu()
         return
+    else if action = "otherVersion" then
+        tryOtherVersion()
+        return
     else if action = "subs" then
         showSubtitleMenu()
         return
@@ -1638,7 +1682,17 @@ sub showToast(text as string)
     m.toastTimer.control = "start"
 end sub
 
+sub showLongToast(text as string)
+    m.toastBg.height = 160
+    m.toast.height = 160
+    m.toastTimer.duration = 9
+    showToast(text)
+end sub
+
 sub hideToast()
+    m.toastBg.height = 80
+    m.toast.height = 80
+    m.toastTimer.duration = 3
     m.toast.visible = false
     m.toastBg.visible = false
 end sub
