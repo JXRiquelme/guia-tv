@@ -581,6 +581,8 @@ sub onM3u(ev as object)
     if m.firstStart then
         ' opening the app: Canal 13, full screen
         m.firstStart = false
+        m.previewTimer.control = "stop"
+        goFull()
         playChannel(canal13Index())
         goFull()
     else
@@ -738,7 +740,7 @@ sub onGuideFocused()
 end sub
 
 sub onPreviewTimer()
-    if not m.guide.visible or m.liveFull then return
+    if not m.home.visible or not m.guide.visible or m.liveFull or m.firstStart then return
     i = m.guideList.itemFocused
     if i >= 0 and i <> m.liveIndex then playChannel(i)
 end sub
@@ -760,6 +762,9 @@ sub onSideSelected()
 end sub
 
 sub setPip()
+    ' the small picture only exists inside the guide
+    m.home.visible = true
+    m.guide.visible = true
     m.liveFull = false
     m.video.translation = [1210, 40]
     m.video.width = 650
@@ -1163,6 +1168,8 @@ sub onOsdTick()
         m.osdTimer.control = "stop"
         return
     end if
+    ' never a small picture over an empty screen: TV without the guide is full screen
+    if m.liveMode and not m.liveFull and not m.home.visible and not m.login.visible then goFull()
     updateOsd()
     if m.osd.visible and m.video.state = "playing" and m.clock.TotalSeconds() >= m.osdHideAt then m.osd.visible = false
 end sub
