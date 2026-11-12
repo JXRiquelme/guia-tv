@@ -3,7 +3,7 @@
 ' serie), así nunca se descarga el catálogo completo.
 
 sub init()
-    m.reg = CreateObject("roRegistrySection", "aeriolite")
+    m.reg = CreateObject("roRegistrySection", "aeriovod")
     m.login = m.top.findNode("login")
     m.loginList = m.top.findNode("loginList")
     m.loginStatus = m.top.findNode("loginStatus")
@@ -518,7 +518,7 @@ sub showOptions()
     if m.mode = "series" then other = "Ver Películas"
     dlg = CreateObject("roSGNode", "StandardMessageDialog")
     if dlg = invalid then dlg = CreateObject("roSGNode", "Dialog")
-    dlg.title = "AerioTV Lite"
+    dlg.title = "AerioTV VOD"
     dlg.buttons = [other, "Cambiar servidor o usuario", "Cancelar"]
     dlg.observeField("buttonSelected", "onOptionsButton")
     m.optionsDlg = dlg

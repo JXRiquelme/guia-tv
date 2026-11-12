@@ -6,7 +6,7 @@
 
     <!-- sign in -->
     <Group id="login" visible="false">
-      <Label translation="[160,130]" text="AerioTV Lite · Películas y series" font="font:LargeBoldSystemFont" color="0xFFFFFFFF" />
+      <Label translation="[160,130]" text="AerioTV VOD · Películas y series" font="font:LargeBoldSystemFont" color="0xFFFFFFFF" />
       <Label translation="[160,210]" width="1560" wrap="true" font="font:SmallSystemFont" color="0xB0B8D0FF"
              text="Ingresa los datos de tu servicio: la dirección del servidor (por ejemplo http://servidor.com:8080), tu usuario y tu contraseña." />
       <LabelList id="loginList" translation="[160,320]" itemSize="[1300,76]" numRows="4" color="0xFFFFFFFF" focusedColor="0x0B1020FF" />
