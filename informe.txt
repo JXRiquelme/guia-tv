@@ -1,10 +1,10 @@
-Actualizado: 2026-11-11 19:35 UTC
+Actualizado: 2026-11-12 07:10 UTC
 
-fuente cl: 2895 programas usados
-fuente srv: 6535 programas usados
-fuente ar: 426 programas usados
-fuente dtv: 157 programas usados
-fuente es: 0 programas usados
+fuente cl: 3301 programas usados
+fuente srv: 6575 programas usados
+fuente ar: 485 programas usados
+fuente dtv: 156 programas usados
+fuente es: 555 programas usados
 canal13          cl / Canal.13.de.Chile.cl (ajuste +0 min)
 t13              srv / C13T13 (ajuste +0 min)
 13c              srv / C13CABH (ajuste +0 min)
@@ -55,13 +55,13 @@ espn3            cl / Canal.ESPN.3.(Chile).cl (ajuste +0 min)
 dsports          srv / SPOARHD (ajuste +0 min)
 dsports2         dtv / DSPORTS.2.HD.dtvsp (ajuste +0 min)
 dsportsplus      dtv / DSPORTS.+.HD.dtvsp (ajuste +0 min)
-dazn1            srv / DAZN1HD (ajuste +0 min)
-dazn2            srv / DAZN2HD (ajuste +0 min)
-dazn3            sin guía
-dazn4            sin guía
-daznlaliga1      sin guía
-daznlaliga2      sin guía
+dazn1            es / DAZN.1.es (ajuste +0 min)
+dazn2            es / DAZN.2.es (ajuste +0 min)
+dazn3            es / DAZN.3.es (ajuste +0 min)
+dazn4            es / DAZN.4.es (ajuste +0 min)
+daznlaliga1      es / DAZN.LaLiga.es (ajuste +0 min)
+daznlaliga2      es / DAZN.LaLiga.2.es (ajuste +0 min)
 laligatv         srv / MOLIGA (ajuste +0 min)
 rmtv             srv / RMAD (ajuste +0 min)
-ligacampeones    sin guía
-cuatro           sin guía
+ligacampeones    es / Movistar.Liga.de.Campeones.es (ajuste +0 min)
+cuatro           es / Cuatro.es (ajuste +0 min)
