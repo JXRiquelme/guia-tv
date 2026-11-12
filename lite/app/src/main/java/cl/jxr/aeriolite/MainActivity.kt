@@ -3789,10 +3789,14 @@ class MainActivity : Activity() {
         info.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
         info.setOnTouchListener { _, e -> cardTouch(e) }
         info.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
-            if (bottom - top != oldBottom - oldTop && portrait && guideCollapsed && vod == null && ::portraitBar.isInitialized) {
+            // the icon row sits right above the card, whatever height the card really got
+            if (bottom > top && portrait && guideCollapsed && vod == null && ::portraitBar.isInitialized) {
                 (portraitBar.layoutParams as FrameLayout.LayoutParams).let {
                     val want = bottomInset + dp(14) + (bottom - top)
-                    if (it.gravity == Gravity.BOTTOM && it.bottomMargin != want) { it.bottomMargin = want; portraitBar.layoutParams = it }
+                    if (it.gravity == Gravity.BOTTOM && it.bottomMargin != want) {
+                        it.bottomMargin = want
+                        portraitBar.post { portraitBar.layoutParams = it }
+                    }
                 }
             }
         }
