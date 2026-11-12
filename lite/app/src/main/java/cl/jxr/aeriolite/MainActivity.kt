@@ -271,6 +271,8 @@ class MainActivity : Activity() {
     private lateinit var topToggleDownloads: TextView
     private val rowAdapter = GridRowAdapter()
     private val episodeAdapter = EpisodeAdapter()
+    /** Episode of the open series to resume (highlighted in the list). */
+    private var continueEpisode: String? = null
     private var browserSeries = false
     private var pendingSeries = false
     private val categoryCache = HashMap<Boolean, List<Category>>()
@@ -354,6 +356,21 @@ class MainActivity : Activity() {
         !BuildConfig.TV && Build.VERSION.SDK_INT >= 26 &&
             packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE) &&
             !packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    }
+
+    /** Keeps the system ready to move what's playing to picture in picture the moment you leave. */
+    private fun updatePipParams() {
+        if (!pipAllowed || Build.VERSION.SDK_INT < 31 || castingTo != null) return
+        val watching = player?.isPlaying == true && browser.visibility != View.VISIBLE &&
+            setup.visibility != View.VISIBLE && account.visibility != View.VISIBLE
+        val ratio = if (videoW > 0 && videoH > 0) {
+            val r = (videoW * videoRatio / videoH).coerceIn(0.5f, 2.3f)
+            Rational((r * 1000).toInt(), 1000)
+        } else Rational(16, 9)
+        try {
+            setPictureInPictureParams(PictureInPictureParams.Builder().setAspectRatio(ratio)
+                .setAutoEnterEnabled(watching).setSeamlessResizeEnabled(true).build())
+        } catch (e: Exception) {}
     }
 
     override fun onUserLeaveHint() {
@@ -613,6 +630,7 @@ class MainActivity : Activity() {
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (vod != null) updateVodBar()
+                updatePipParams()
             }
 
             override fun onRenderedFirstFrame() {
@@ -645,6 +663,7 @@ class MainActivity : Activity() {
                     videoH = videoSize.height
                     videoRatio = videoSize.pixelWidthHeightRatio
                     fitVideo()
+                    updatePipParams()
                 }
             }
         })
@@ -1782,6 +1801,7 @@ class MainActivity : Activity() {
         browser.alpha = 0f
         browser.animate().alpha(1f).setDuration(200).start()
         refreshContinue()
+        updatePipParams()
         rowAdapter.notifyDataSetChanged()
         if (seriesView.visibility == View.VISIBLE) {
             episodeAdapter.notifyDataSetChanged()
@@ -1932,6 +1952,7 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- movies & series browser
 
     private fun openBrowser(series: Boolean) {
+        main.post { updatePipParams() }
         cloud.refresh()
         if (xtream() == null) {
             pendingSeries = series
@@ -2006,6 +2027,7 @@ class MainActivity : Activity() {
     private fun closeBrowser() {
         hideKeyboard()
         browser.visibility = View.GONE
+        main.post { updatePipParams() }
         if (portrait) updateStatusBar()
         root.requestFocus()
         shutter.visibility = View.VISIBLE
@@ -2309,6 +2331,9 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
         }
         seasonScroll.visibility = if (seasons.size > 1) View.VISIBLE else View.GONE
+        continueEpisode = focusEpisodeId
+            ?: history.continueWatching(true).firstOrNull { it.seriesId == openSeries?.id && !it.finished }?.id
+                ?.takeIf { id -> episodes.any { it.id == id } }
         val start = episodes.firstOrNull { it.id == focusEpisodeId }?.season
             ?: episodes.firstOrNull { e -> history.get("e:" + e.id)?.let { !it.finished } == true }?.season
             ?: seasons.firstOrNull() ?: -1
@@ -2331,6 +2356,7 @@ class MainActivity : Activity() {
         val idx = seasonEpisodes.indexOfFirst { it.id == focusEpisodeId }.takeIf { it >= 0 }
             ?: seasonEpisodes.indexOfFirst { e -> history.get("e:" + e.id)?.let { !it.finished } == true }
         episodeList.setSelection(idx.coerceAtLeast(0))
+        if (idx > 0) episodeList.post { episodeList.setSelectionFromTop(idx, dp(24)) }
     }
 
     private fun loadEpisodes(series: VodItem, playAfter: Watch?, focusEpisodeId: String? = null) {
@@ -4714,8 +4740,12 @@ class MainActivity : Activity() {
                 else -> ""
             }
             val dl = downloads.get("e:" + e.id)?.let { if (it.done) "⬇ Descargado" else if (it.failed) "" else "⬇ ${it.percent} %" }.orEmpty()
-            val sub = listOf("Episodio ${e.number}", progress, dl).filter { it.isNotEmpty() }.joinToString("  ·  ")
+            val here = e.id == continueEpisode
+            val sub = listOf(if (here) "▶ Continuar aquí" else "", "Episodio ${e.number}", progress, dl)
+                .filter { it.isNotEmpty() }.joinToString("  ·  ")
             fillRow(row, e.number.toString(), e.image, cleanEpisodeTitle(e.title, e.number), sub)
+            // the episode you were watching stands out (a list selection is invisible on touch screens)
+            row.background = focusBg(14, if (here) 0x40FFC857 else Color.TRANSPARENT)
             return row
         }
     }
