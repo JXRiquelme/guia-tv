@@ -823,22 +823,33 @@ struct SeriesDetail: View {
                         }
                     }
                 }
-                ScrollView {
-                    LazyVStack(spacing: 4) {
-                        ForEach(app.seasonEpisodes) { e in episodeRow(e) }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 4) {
+                            ForEach(app.seasonEpisodes) { e in episodeRow(e).id(e.id) }
+                        }
                     }
+                    .onAppear { scrollToContinue(proxy) }
+                    .onChange(of: app.continueEpisode) { _ in scrollToContinue(proxy) }
+                    .onChange(of: app.season) { _ in scrollToContinue(proxy) }
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private func scrollToContinue(_ proxy: ScrollViewProxy) {
+        guard let id = app.continueEpisode, app.seasonEpisodes.contains(where: { $0.id == id }) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { withAnimation { proxy.scrollTo(id, anchor: .center) } }
+    }
+
     private func episodeRow(_ e: Episode) -> some View {
+        let here = e.id == app.continueEpisode
         let w = app.history.first { $0.id == "e:" + e.id }
         let seen = w.map { $0.finished ? "Visto" : ($0.position > 30 ? "Quedaste en \(app.clock($0.position))" : "") } ?? ""
         let rec = dl.record("e:" + e.id)
         let dlText = rec.map { $0.done ? "⬇ Descargado" : (dl.failed.contains($0.id) ? "" : "⬇ \(Int((dl.progress[$0.id] ?? 0) * 100)) %") } ?? ""
-        let sub = [seen, dlText].filter { !$0.isEmpty }.joined(separator: "  ·  ")
+        let sub = [here ? "▶ Continuar aquí" : "", seen, dlText].filter { !$0.isEmpty }.joined(separator: "  ·  ")
         return HStack(spacing: 12) {
             Text("\(e.number)").font(.system(size: 16)).foregroundColor(Theme.hint).frame(width: 34, alignment: .trailing)
             RemoteImage(url: e.image, mode: .fill).frame(width: 110, height: 62).background(Theme.card).clipped().cornerRadius(6)
@@ -849,7 +860,7 @@ struct SeriesDetail: View {
             Spacer()
         }
         .padding(6)
-        .background(Color.white.opacity(0.04)).cornerRadius(8)
+        .background(here ? Color(red: 1, green: 0.78, blue: 0.34).opacity(0.25) : Color.white.opacity(0.04)).cornerRadius(8)
         .contentShape(Rectangle())
         .onTapGesture { app.playVod(app.episodeWatch(series, e)) }
         .contextMenu {

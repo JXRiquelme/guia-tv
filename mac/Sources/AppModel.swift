@@ -934,9 +934,10 @@ final class AppModel: ObservableObject {
         case .download(let d):
             if DownloadCenter.shared.localURL(d.id) != nil { playVod(d.watch) }
         case .watch(let w):
-            if w.episode, !w.seriesId.isEmpty, openSeries?.streamId != w.seriesId {
+            // a series in "Seguir viendo": its episodes, standing on the one you were watching
+            if w.episode, !w.seriesId.isEmpty {
                 let s = VodItem(series: true, streamId: w.seriesId, title: w.title, poster: w.poster, ext: w.ext, year: "", rating: "", categoryId: "")
-                loadEpisodes(s, playAfter: w)
+                openSeriesView(s, focus: w.streamId)
             } else {
                 playVod(w)
             }
@@ -1005,12 +1006,16 @@ final class AppModel: ObservableObject {
 
     // MARK: Series
 
-    func openSeriesView(_ s: VodItem) {
+    func openSeriesView(_ s: VodItem, focus: String? = nil) {
         openSeries = s
         episodes = []
+        continueEpisode = nil
         seriesInfo = "Cargando episodios…"
-        loadEpisodes(s, playAfter: nil)
+        loadEpisodes(s, playAfter: nil, focus: focus)
     }
+
+    /// Episode of the open series to resume (highlighted, scrolled into view).
+    @Published var continueEpisode: String?
 
     func episodeWatch(_ s: VodItem, _ e: Episode) -> Watch {
         Watch(episode: true, streamId: e.id, ext: e.ext, title: s.title, subtitle: "T\(e.season) · E\(e.number)  \(e.title)",
@@ -1020,7 +1025,7 @@ final class AppModel: ObservableObject {
     var seasons: [Int] { Array(Set(episodes.map { $0.season })).sorted() }
     var seasonEpisodes: [Episode] { episodes.filter { $0.season == season } }
 
-    private func loadEpisodes(_ s: VodItem, playAfter: Watch?) {
+    private func loadEpisodes(_ s: VodItem, playAfter: Watch?, focus: String? = nil) {
         guard let acc = xtream() else { return }
         loadToken += 1
         let token = loadToken
@@ -1029,8 +1034,12 @@ final class AppModel: ObservableObject {
             let list = (try? r.get()) ?? []
             self.openSeries = s
             self.episodes = list
+            // the most recent unfinished episode of this series (or the one asked for)
+            let recent = self.history.first { $0.episode && $0.seriesId == s.streamId && !$0.finished }?.streamId
+            let target = focus ?? playAfter?.streamId ?? recent
             let resume = list.first { e in self.history.first { $0.id == "e:" + e.id }.map { !$0.finished } ?? false }
-            self.season = list.first { $0.id == playAfter?.streamId }?.season ?? resume?.season ?? self.seasons.first ?? 0
+            self.continueEpisode = list.contains { $0.id == target } ? target : resume?.id
+            self.season = list.first { $0.id == self.continueEpisode }?.season ?? resume?.season ?? self.seasons.first ?? 0
             if case .failure(let e) = r {
                 self.seriesInfo = "No se pudo cargar: \(e.localizedDescription)"
             } else {
