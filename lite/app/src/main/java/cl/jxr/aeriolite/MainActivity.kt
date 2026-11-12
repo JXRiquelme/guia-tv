@@ -629,6 +629,10 @@ class MainActivity : Activity() {
                 if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
                     player?.seekToDefaultPosition()
                     player?.prepare()
+                } else if (vod != null && player?.currentMediaItem?.mediaId?.endsWith(".m3u8") == true &&
+                    vod?.ext?.equals("ts", true) == true && vodPlainTs.add(vod!!.key)) {
+                    // the service has no HLS version of this title: play the .ts file instead
+                    vod?.let { playVod(it) }
                 } else {
                     fadeCard()
                     recover()
@@ -700,6 +704,8 @@ class MainActivity : Activity() {
     private var recoverAttempts = 0
     private var stallSince = 0L
     @Volatile private var lastByteAt = 0L
+    /** Titles whose HLS version failed: played as the original .ts file. */
+    private val vodPlainTs = HashSet<String>()
     private var lastBuffered = -1L
     private var lastBufferedTotal = -1L
 
@@ -1656,9 +1662,14 @@ class MainActivity : Activity() {
         }
         if (aspectMode != 0) { aspectMode = 0; fitVideo() }
         val local = downloads.localUri(w.key)
-        val url = local ?: if (w.episode) acc.episodeUrl(w.id, w.ext) else acc.movieUrl(w.id, w.ext)
+        // .ts films: ask the service for the same title as HLS (.m3u8). It comes in short pieces with
+        // an index, so resuming goes straight to the minute (~5 s, like on the Roku) instead of
+        // searching inside one huge file. If the service refuses it, the .ts is used as before.
+        val hls = local == null && !vodPlainTs.contains(w.key) && w.ext.equals("ts", true)
+        val ext = if (hls) "m3u8" else w.ext
+        val url = local ?: if (w.episode) acc.episodeUrl(w.id, ext) else acc.movieUrl(w.id, ext)
         val item = MediaItem.Builder().setUri(url)
-        if (w.ext.equals("m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
+        if (ext.equals("m3u8", true)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
         shutter.visibility = View.VISIBLE
         val p = ensurePlayer()
         applyLanguages(p)

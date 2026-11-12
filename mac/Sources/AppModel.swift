@@ -367,7 +367,7 @@ final class AppModel: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 guard let self = self, token == self.playToken else { return }
                 self.recovering = false
-                self.mpv.load(w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext), start: pos)
+                self.mpv.load(w.episode ? acc.episodeURL(w.streamId, self.vodHLS ? "m3u8" : w.ext) : acc.movieURL(w.streamId, self.vodHLS ? "m3u8" : w.ext), start: pos)
             }
             return
         }
@@ -416,6 +416,10 @@ final class AppModel: ObservableObject {
         if cardChannel != nil { withAnimation(.easeOut(duration: 0.25)) { cardChannel = nil } }
     }
 
+    /// Titles whose HLS version failed (played as the .ts file instead).
+    private var plainTs = Set<String>()
+    private var vodHLS = false
+
     private func playbackEnded(error: Bool, eof: Bool) {
         if let w = vod {
             if eof {
@@ -428,6 +432,9 @@ final class AppModel: ObservableObject {
                 } else {
                     leaveVod()
                 }
+            } else if error && vodHLS && !plainTs.contains(w.id) {
+                plainTs.insert(w.id)
+                playVod(w)
             } else if error {
                 if !recovering { recover() }
             }
@@ -646,7 +653,12 @@ final class AppModel: ObservableObject {
         // one connection at a time: close what was playing, then open straight at the resume point
         // (a downloaded copy plays from the disk, no waiting)
         let local = DownloadCenter.shared.localURL(w.id)
-        let url = local?.path ?? (w.episode ? acc.episodeURL(w.streamId, w.ext) : acc.movieURL(w.streamId, w.ext))
+        // .ts films: the same title as HLS (.m3u8) resumes straight at the minute (~5 s, like the
+        // Roku); if the service has no HLS version, the .ts file is used.
+        let hls = local == nil && w.ext.lowercased() == "ts" && !plainTs.contains(w.id)
+        let ext = hls ? "m3u8" : w.ext
+        vodHLS = hls
+        let url = local?.path ?? (w.episode ? acc.episodeURL(w.streamId, ext) : acc.movieURL(w.streamId, ext))
         mpv.stop()
         recovering = true
         DispatchQueue.main.asyncAfter(deadline: .now() + (local != nil ? 0.05 : 0.6)) { [weak self] in
