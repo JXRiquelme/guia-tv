@@ -516,6 +516,11 @@ end sub
 sub onM3u(ev as object)
     t = ev.getRoSGNode()
     if ev.getField() = "error" then
+        ' the address didn't answer: use the list that comes inside the app
+        if Left(t.param, 4) <> "pkg:" and CreateObject("roFileSystem").Exists("pkg:/source/canales.m3u") then
+            runTask("m3u", "pkg:/source/canales.m3u", "onM3u")
+            return
+        end if
         if m.mode = "live" then m.gridStatus.text = t.error
         return
     end if
@@ -1156,7 +1161,7 @@ sub showOptions()
     actions.push("account")
     labels.push("Cancelar")
     actions.push("none")
-    showMenu("TV/VOD", labels, actions)
+    showMenu("TVOD", labels, actions)
 end sub
 
 sub showMenu(title as string, labels as object, actions as object)
