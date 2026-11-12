@@ -300,6 +300,7 @@ sub focusTabs(on as boolean)
     paintTabs()
     if on then
         m.keys.setFocus(true)
+        if not m.keys.hasFocus() then m.top.setFocus(true)
     else if m.mode = "live" then
         m.guideList.setFocus(true)
     else
@@ -369,6 +370,7 @@ sub onCats(ev as object)
 end sub
 
 sub onCatFocused()
+    if m.tabsFocused then return
     m.catTimer.control = "stop"
     m.catTimer.control = "start"
 end sub
@@ -378,6 +380,10 @@ sub onCatTimer()
 end sub
 
 sub onCatSelected()
+    if m.tabsFocused then
+        switchMode(m.tabCursor)
+        return
+    end if
     if m.catIds[m.cats.itemSelected] = "__search" then
         what = "películas"
         if m.mode = "series" then what = "series"
@@ -492,6 +498,10 @@ function focusedGridItem() as dynamic
 end function
 
 sub onGridSelected()
+    if m.tabsFocused then
+        switchMode(m.tabCursor)
+        return
+    end if
     c = m.grid.content
     if c = invalid then return
     item = c.getChild(m.grid.itemSelected)
@@ -711,6 +721,7 @@ end sub
 
 ' moving in the grid: show it and, after a moment, play it in the small picture
 sub onGuideFocused()
+    if m.tabsFocused then return
     i = m.guideList.itemFocused
     showGuideInfo(i)
     m.previewTimer.control = "stop"
@@ -724,6 +735,10 @@ sub onPreviewTimer()
 end sub
 
 sub onGuideSelected()
+    if m.tabsFocused then
+        switchMode(m.tabCursor)
+        return
+    end if
     i = m.guideList.itemSelected
     if i <> m.liveIndex or not m.video.visible then playChannel(i)
     goFull()
@@ -1525,12 +1540,17 @@ function onKeyEvent(key as string, press as boolean) as boolean
             return true
         else if key = "back" and m.mode = "live" then
             focusTabs(true)
+            showToast("Atrás otra vez para salir de la app")
             return true
         else if key = "right" and m.cats.hasFocus() then
             if m.grid.content <> invalid and m.grid.content.getChildCount() > 0 then m.grid.setFocus(true)
             return true
         else if (key = "left" or key = "back") and m.grid.hasFocus() then
             m.cats.setFocus(true)
+            return true
+        else if key = "back" then
+            focusTabs(true)
+            showToast("Atrás otra vez para salir de la app")
             return true
         end if
     else if m.seriesView.visible then
