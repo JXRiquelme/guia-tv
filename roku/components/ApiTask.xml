@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Asks the service (Xtream API) for one small piece at a time: the categories, one category's
+     titles, or one series' episodes. Never the whole catalog at once. -->
+<component name="ApiTask" extends="Task">
+  <interface>
+    <field id="server" type="string" />
+    <field id="user" type="string" />
+    <field id="pass" type="string" />
+    <field id="kind" type="string" />      <!-- auth | vodcats | seriescats | vod | series | info -->
+    <field id="param" type="string" />     <!-- category_id or series_id -->
+    <field id="result" type="node" alwaysNotify="true" />
+    <field id="error" type="string" alwaysNotify="true" />
+  </interface>
+  <script type="text/brightscript" uri="ApiTask.brs" />
+</component>
