@@ -6,6 +6,16 @@ sub fetchData()
     xfer = CreateObject("roUrlTransfer")
     base = m.top.server + "/player_api.php?username=" + xfer.Escape(m.top.user) + "&password=" + xfer.Escape(m.top.pass)
     kind = m.top.kind
+    if kind = "m3u" then
+        loadM3u()
+        return
+    else if kind = "guide" then
+        loadGuide()
+        return
+    else if kind = "search" then
+        search()
+        return
+    end if
     url = base
     if kind = "vodcats" then url = base + "&action=get_vod_categories"
     if kind = "seriescats" then url = base + "&action=get_series_categories"
@@ -170,4 +180,156 @@ function toStr(v as dynamic) as string
         return "0"
     end if
     return ""
+end function
+
+' ------------------------------------------------------------------ live channels (the curated list)
+
+sub loadM3u()
+    body = fetch(m.top.param)
+    if body = invalid then
+        m.top.error = "No se pudo descargar la lista de canales."
+        return
+    end if
+    root = CreateObject("roSGNode", "ContentNode")
+    lines = body.Split(Chr(10))
+    cur = invalid
+    rxAttr = CreateObject("roRegex", "([a-zA-Z-]+)=" + Chr(34) + "([^" + Chr(34) + "]*)" + Chr(34), "")
+    number = 0
+    for each raw in lines
+        line = raw.Trim()
+        if Left(line, 8) = "#EXTINF:" then
+            cur = { name: "", logo: "", tvg: "", alts: [] }
+            comma = lastComma(line)
+            if comma > 0 then cur.name = Mid(line, comma + 1).Trim()
+            for each mt in rxAttr.MatchAll(line)
+                k = LCase(mt[1])
+                if k = "tvg-logo" then cur.logo = mt[2]
+                if k = "tvg-id" then cur.tvg = mt[2]
+            end for
+        else if Left(line, 8) = "#EXTALT:" and cur <> invalid then
+            rest = Mid(line, 9)
+            bar = Instr(1, rest, "|")
+            if bar > 0 then cur.alts.push({ label: Left(rest, bar - 1).Trim(), url: Mid(rest, bar + 1).Trim() })
+        else if line <> "" and Left(line, 1) <> "#" and cur <> invalid then
+            number = number + 1
+            n = root.createChild("ContentNode")
+            n.title = cur.name
+            n.hdPosterUrl = cur.logo
+            n.shortDescriptionLine2 = number.ToStr()
+            opts = [{ label: "Opción 1", url: line }]
+            for each a in cur.alts
+                opts.push(a)
+            end for
+            n.addFields({ tvg: cur.tvg, options: opts, num: number })
+            cur = invalid
+        end if
+    end for
+    m.top.result = root
+end sub
+
+function lastComma(line as string) as integer
+    ' the name follows the last comma outside the quoted attributes
+    inQuote = false
+    at = 0
+    for i = 1 to Len(line)
+        ch = Mid(line, i, 1)
+        if ch = Chr(34) then inQuote = not inQuote
+        if ch = "," and not inQuote then at = i
+    end for
+    return at
+end function
+
+sub loadGuide()
+    body = fetch("https://raw.githubusercontent.com/JXRiquelme/guia-tv/main/guia-roku.json")
+    if body = invalid then
+        m.top.error = "Sin guía"
+        return
+    end if
+    data = ParseJson(body)
+    if type(data) <> "roAssociativeArray" then
+        m.top.error = "Sin guía"
+        return
+    end if
+    root = CreateObject("roSGNode", "ContentNode")
+    root.addFields({ guide: data })
+    m.top.result = root
+end sub
+
+' ------------------------------------------------------------------ search (whole catalog, kept as a file)
+
+sub search()
+    xfer = CreateObject("roUrlTransfer")
+    action = "get_vod_streams"
+    if m.top.mode = "series" then action = "get_series"
+    file = "tmp:/all_" + m.top.mode + ".json"
+    fs = CreateObject("roFileSystem")
+    if not fs.Exists(file) then
+        url = m.top.server + "/player_api.php?username=" + xfer.Escape(m.top.user) + "&password=" + xfer.Escape(m.top.pass) + "&action=" + action
+        if not download(url, file) then
+            m.top.error = "No se pudo descargar el catálogo para buscar."
+            return
+        end if
+    end if
+    q = plain(LCase(m.top.param.Trim()))
+    root = CreateObject("roSGNode", "ContentNode")
+    if q = "" then
+        m.top.result = root
+        return
+    end if
+    text = ReadAsciiFile(file)
+    rxName = CreateObject("roRegex", Chr(34) + "name" + Chr(34) + ":" + Chr(34) + "((?:[^" + Chr(34) + "\\]|\\.)*)" + Chr(34), "")
+    found = 0
+    for each chunk in text.Split("},{")
+        mt = rxName.Match(chunk)
+        if mt.Count() > 1 then
+            if Instr(1, plain(LCase(mt[1])), q) > 0 then
+                c = chunk
+                if Left(c, 2) = "[{" then c = Mid(c, 3)
+                if Left(c, 1) = "{" then c = Mid(c, 2)
+                if Right(c, 2) = "}]" then c = Left(c, Len(c) - 2)
+                o = ParseJson("{" + c + "}")
+                if o <> invalid then
+                    n = root.createChild("ContentNode")
+                    if m.top.mode = "series" then
+                        n.addFields({ kind: "series", streamId: "", ext: "", seriesId: toStr(o.series_id) })
+                        n.hdPosterUrl = toStr(o.cover)
+                    else
+                        n.addFields({ kind: "movie", streamId: toStr(o.stream_id), ext: toStr(o.container_extension), seriesId: "" })
+                        n.hdPosterUrl = toStr(o.stream_icon)
+                    end if
+                    n.title = toStr(o.name)
+                    n.shortDescriptionLine1 = n.title
+                    n.sdPosterUrl = n.hdPosterUrl
+                    found = found + 1
+                    if found >= 150 then exit for
+                end if
+            end if
+        end if
+    end for
+    m.top.result = root
+end sub
+
+function download(url as string, file as string) as boolean
+    xfer = CreateObject("roUrlTransfer")
+    port = CreateObject("roMessagePort")
+    xfer.SetMessagePort(port)
+    xfer.SetUrl(url)
+    xfer.SetCertificatesFile("common:/certs/ca-bundle.crt")
+    xfer.InitClientCertificates()
+    xfer.EnableEncodings(true)
+    if not xfer.AsyncGetToFile(file) then return false
+    msg = Wait(120000, port)
+    if type(msg) = "roUrlEvent" and msg.GetResponseCode() = 200 then return true
+    xfer.AsyncCancel()
+    CreateObject("roFileSystem").Delete(file)
+    return false
+end function
+
+' lowercase text without accents, so "accion" finds "Acción" (JSON may also write them as \u00f3)
+function plain(s as string) as string
+    pairs = [["\u00e1", "a"], ["\u00e9", "e"], ["\u00ed", "i"], ["\u00f3", "o"], ["\u00fa", "u"], ["\u00f1", "n"], ["\u00fc", "u"], ["\u00c1", "a"], ["\u00c9", "e"], ["\u00cd", "i"], ["\u00d3", "o"], ["\u00da", "u"], ["\u00d1", "n"], ["á", "a"], ["é", "e"], ["í", "i"], ["ó", "o"], ["ú", "u"], ["ñ", "n"], ["ü", "u"], ["Á", "a"], ["É", "e"], ["Í", "i"], ["Ó", "o"], ["Ú", "u"], ["Ñ", "n"]]
+    for each p in pairs
+        s = s.Replace(p[0], p[1])
+    end for
+    return s
 end function

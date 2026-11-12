@@ -10,7 +10,12 @@ sub init()
     m.loginStatus = m.top.findNode("loginStatus")
     m.home = m.top.findNode("home")
     m.tabMark = m.top.findNode("tabMark")
+    m.tabLive = m.top.findNode("tabLive")
     m.tabMovies = m.top.findNode("tabMovies")
+    m.channels = m.top.findNode("channels")
+    m.osdLogo = m.top.findNode("osdLogo")
+    m.osdHelp = m.top.findNode("osdHelp")
+    m.guideTimer = m.top.findNode("guideTimer")
     m.tabSeries = m.top.findNode("tabSeries")
     m.cats = m.top.findNode("cats")
     m.grid = m.top.findNode("grid")
@@ -38,6 +43,8 @@ sub init()
     m.cats.observeField("itemFocused", "onCatFocused")
     m.cats.observeField("itemSelected", "onCatSelected")
     m.grid.observeField("itemSelected", "onGridSelected")
+    m.channels.observeField("itemSelected", "onChannelSelected")
+    m.guideTimer.observeField("fire", "refreshNow")
     m.seasons.observeField("itemFocused", "onSeasonFocused")
     m.seasons.observeField("itemSelected", "onSeasonSelected")
     m.episodes.observeField("itemSelected", "onEpisodeSelected")
@@ -50,9 +57,16 @@ sub init()
     m.server = readReg("server")
     m.user = readReg("user")
     m.pass = readReg("pass")
-    if m.server = "" or m.user = "" or m.pass = "" then loadDefaults()
+    m.list = readReg("list")
+    if m.server = "" or m.user = "" or m.pass = "" or m.list = "" then loadDefaults()
     m.mode = readReg("mode")
-    if m.mode <> "series" then m.mode = "movies"
+    if m.mode <> "series" and m.mode <> "movies" then m.mode = "live"
+    m.tabCursor = m.mode
+    m.liveMode = false
+    m.channelsNode = invalid
+    m.guide = invalid
+    m.searchResults = invalid
+    m.searchText = ""
     m.cache = {}
     m.cacheOrder = []
     m.catIds = []
@@ -77,9 +91,10 @@ sub loadDefaults()
     if raw = "" then return
     a = ParseJson(raw)
     if type(a) <> "roAssociativeArray" then return
-    if a.server <> invalid then m.server = a.server
-    if a.user <> invalid then m.user = a.user
-    if a.pass <> invalid then m.pass = a.pass
+    if a.server <> invalid and m.server = "" then m.server = a.server
+    if a.user <> invalid and m.user = "" then m.user = a.user
+    if a.pass <> invalid and m.pass = "" then m.pass = a.pass
+    if a.list <> invalid and m.list = "" then m.list = a.list
 end sub
 
 ' ------------------------------------------------------------------ sign in
@@ -100,8 +115,10 @@ sub refreshLoginList()
     usr = m.user
     if usr = "" then usr = "(toca para escribir)"
     pwd = "(toca para escribir)"
-    if m.pass <> "" then pwd = String(Len(m.pass), "•")
-    for each t in ["Servidor:  " + srv, "Usuario:  " + usr, "Contraseña:  " + pwd, "Conectar"]
+    if m.pass <> "" then pwd = String(Len(m.pass), "*")
+    lst = m.list
+    if lst = "" then lst = "(toca para escribir)"
+    for each t in ["Servidor:  " + srv, "Usuario:  " + usr, "Contraseña:  " + pwd, "Lista de canales:  " + lst, "Conectar"]
         n = root.createChild("ContentNode")
         n.title = t
     end for
@@ -120,6 +137,10 @@ sub onLoginSelected()
         askText("Usuario", m.user, "user")
     else if i = 2 then
         askText("Contraseña", m.pass, "pass")
+    else if i = 3 then
+        value = m.list
+        if value = "" then value = "https://tinyurl.com/"
+        askText("Enlace de la lista de canales", value, "list")
     else
         connect()
     end if
@@ -145,9 +166,15 @@ sub onKeyboardButton()
         if m.kbField = "server" then m.server = value
         if m.kbField = "user" then m.user = value
         if m.kbField = "pass" then m.pass = value
+        if m.kbField = "list" then m.list = value
+        if m.kbField = "search" then m.searchText = value
     end if
     dlg.close = true
     m.kb = invalid
+    if m.kbField = "search" then
+        if dlg.buttonSelected = 0 then runSearch() else m.cats.setFocus(true)
+        return
+    end if
     refreshLoginList()
     m.loginList.setFocus(true)
 end sub
@@ -158,7 +185,7 @@ sub connect()
         m.loginStatus.text = "Completa servidor, usuario y contraseña."
         return
     end if
-    m.loginStatus.text = "Conectando…"
+    m.loginStatus.text = "Conectando..."
     refreshLoginList()
     runTask("auth", "", "onAuth")
 end sub
@@ -175,6 +202,8 @@ sub onAuth(ev as object)
         writeReg("server", m.server)
         writeReg("user", m.user)
         writeReg("pass", m.pass)
+        writeReg("list", m.list)
+        m.channelsNode = invalid
         m.login.visible = false
         m.cache = {}
         m.cacheOrder = []
@@ -204,38 +233,78 @@ sub showHome()
     m.video.visible = false
     m.home.visible = true
     paintTabs()
+    if m.mode = "live" then
+        showLive()
+        return
+    end if
+    m.channels.visible = false
+    m.cats.visible = true
+    m.grid.visible = true
+    m.guideTimer.control = "stop"
     m.grid.content = CreateObject("roSGNode", "ContentNode")
-    m.gridStatus.text = "Cargando categorías…"
+    m.gridStatus.text = "Cargando categorías..."
     loading = CreateObject("roSGNode", "ContentNode")
     n = loading.createChild("ContentNode")
-    n.title = "Cargando…"
+    n.title = "Cargando..."
     m.cats.content = loading
     m.catIds = [""]
     if m.tabsFocused then m.top.setFocus(true) else m.cats.setFocus(true)
     if m.mode = "series" then runTask("seriescats", "", "onCats") else runTask("vodcats", "", "onCats")
 end sub
 
+function tabNode(mode as string) as object
+    if mode = "series" then return m.tabSeries
+    if mode = "movies" then return m.tabMovies
+    return m.tabLive
+end function
+
+' the mark sits on the active section; while the tabs have the focus it follows the cursor (bright)
 sub paintTabs()
-    active = m.tabMovies
-    other = m.tabSeries
-    if m.mode = "series" then
-        active = m.tabSeries
-        other = m.tabMovies
+    for each mode in ["live", "movies", "series"]
+        t = tabNode(mode)
+        if mode = m.mode then t.color = "0xFFFFFFFF" else t.color = "0x8A93AFFF"
+    end for
+    if m.tabsFocused then
+        m.tabMark.translation = tabNode(m.tabCursor).translation
+        m.tabMark.color = "0x2563EBFF"
+    else
+        m.tabMark.translation = tabNode(m.mode).translation
+        m.tabMark.color = "0x2563EB55"
     end if
-    m.tabMark.translation = active.translation
-    active.color = "0xFFFFFFFF"
-    other.color = "0x8A93AFFF"
-    if m.tabsFocused then m.tabMark.color = "0x2563EBFF" else m.tabMark.color = "0x2563EB55"
 end sub
 
 sub focusTabs(on as boolean)
     m.tabsFocused = on
+    m.tabCursor = m.mode
     paintTabs()
-    if on then m.top.setFocus(true) else m.cats.setFocus(true)
+    if on then
+        m.top.setFocus(true)
+    else if m.mode = "live" then
+        m.channels.setFocus(true)
+    else
+        m.cats.setFocus(true)
+    end if
+end sub
+
+sub moveTabCursor(delta as integer)
+    order = ["live", "movies", "series"]
+    i = 0
+    for j = 0 to 2
+        if order[j] = m.tabCursor then i = j
+    end for
+    i = i + delta
+    if i < 0 then i = 0
+    if i > 2 then i = 2
+    m.tabCursor = order[i]
+    paintTabs()
 end sub
 
 sub switchMode(mode as string)
-    if mode = m.mode then return
+    m.tabsFocused = false
+    if mode = m.mode then
+        focusTabs(false)
+        return
+    end if
     m.mode = mode
     writeReg("mode", m.mode)
     showHome()
@@ -244,17 +313,20 @@ end sub
 sub onCats(ev as object)
     t = ev.getRoSGNode()
     if ev.getField() = "error" then
-        m.gridStatus.text = t.error + Chr(10) + "Pulsa ✱ para revisar los datos del servicio."
+        m.gridStatus.text = t.error + Chr(10) + "Pulsa * para revisar los datos del servicio."
         return
     end if
     r = t.result
     if r = invalid then return
     root = CreateObject("roSGNode", "ContentNode")
     n = root.createChild("ContentNode")
-    n.title = "▶  Continuar viendo"
+    n.title = "Buscar"
+    n = root.createChild("ContentNode")
+    n.title = "Continuar viendo"
     n = root.createChild("ContentNode")
     n.title = "★  Ver más tarde"
-    m.catIds = ["__continue", "__later"]
+    m.catIds = ["__search", "__continue", "__later"]
+    m.searchResults = invalid
     for i = 0 to r.getChildCount() - 1
         c = r.getChild(i)
         n = root.createChild("ContentNode")
@@ -264,11 +336,11 @@ sub onCats(ev as object)
     m.cats.content = root
     m.gridStatus.text = ""
     ' open on "Continuar viendo" when there is something to continue, else on the first category
-    start = 0
+    start = 1
     if historyFor(m.mode).Count() = 0 then
-        start = 2
-        if laterFor(m.mode).Count() > 0 then start = 1
-        if start >= m.catIds.Count() then start = 0
+        start = 3
+        if laterFor(m.mode).Count() > 0 then start = 2
+        if start >= m.catIds.Count() then start = 1
     end if
     m.cats.jumpToItem = start
     if not m.tabsFocused then m.cats.setFocus(true)
@@ -285,7 +357,48 @@ sub onCatTimer()
 end sub
 
 sub onCatSelected()
+    if m.catIds[m.cats.itemSelected] = "__search" then
+        what = "películas"
+        if m.mode = "series" then what = "series"
+        askText("Buscar " + what, m.searchText, "search")
+        return
+    end if
     if m.grid.content <> invalid and m.grid.content.getChildCount() > 0 then m.grid.setFocus(true)
+end sub
+
+sub runSearch()
+    if m.searchText = "" then
+        m.cats.setFocus(true)
+        return
+    end if
+    m.grid.content = CreateObject("roSGNode", "ContentNode")
+    m.gridStatus.text = "Buscando «" + m.searchText + "»..." + Chr(10) + "La primera búsqueda descarga el catálogo completo y puede tardar un poco."
+    m.searchMode = m.mode
+    t = CreateObject("roSGNode", "ApiTask")
+    t.server = m.server
+    t.user = m.user
+    t.pass = m.pass
+    t.kind = "search"
+    t.mode = m.mode
+    t.param = m.searchText
+    t.observeField("result", "onSearch")
+    t.observeField("error", "onSearch")
+    m.tasks["search"] = t
+    t.control = "RUN"
+    m.cats.setFocus(true)
+end sub
+
+sub onSearch(ev as object)
+    t = ev.getRoSGNode()
+    if t.mode <> m.mode or m.currentCat <> "__search" then return
+    if ev.getField() = "error" then
+        m.gridStatus.text = t.error
+        return
+    end if
+    if t.result = invalid then return
+    m.searchResults = t.result
+    setGrid(t.result, "Nada encontrado para «" + m.searchText + "».")
+    if t.result.getChildCount() > 0 then m.grid.setFocus(true)
 end sub
 
 sub loadCategory(i as integer)
@@ -293,12 +406,21 @@ sub loadCategory(i as integer)
     id = m.catIds[i]
     if id = "" then return
     m.currentCat = id
+    if id = "__search" then
+        if m.searchResults <> invalid then
+            setGrid(m.searchResults, "Nada encontrado.")
+        else
+            m.grid.content = CreateObject("roSGNode", "ContentNode")
+            m.gridStatus.text = "Pulsa OK para buscar por nombre."
+        end if
+        return
+    end if
     if id = "__continue" then
         setGrid(continueContent(), "Aún no has visto nada.")
         return
     end if
     if id = "__later" then
-        setGrid(laterContent(), "Vacío. En cualquier título pulsa ✱ y elige «Agregar a Ver más tarde».")
+        setGrid(laterContent(), "Vacío. En cualquier título pulsa * y elige «Agregar a Ver más tarde».")
         return
     end if
     key = m.mode + ":" + id
@@ -307,7 +429,7 @@ sub loadCategory(i as integer)
         return
     end if
     m.grid.content = CreateObject("roSGNode", "ContentNode")
-    m.gridStatus.text = "Cargando…"
+    m.gridStatus.text = "Cargando..."
     m.loadingKey = key
     if m.mode = "series" then runTask("series", id, "onCategory") else runTask("vod", id, "onCategory")
 end sub
@@ -339,7 +461,7 @@ end sub
 
 sub refreshSpecialCategory()
     if m.currentCat = "__continue" then setGrid(continueContent(), "Aún no has visto nada.")
-    if m.currentCat = "__later" then setGrid(laterContent(), "Vacío. En cualquier título pulsa ✱ y elige «Agregar a Ver más tarde».")
+    if m.currentCat = "__later" then setGrid(laterContent(), "Vacío. En cualquier título pulsa * y elige «Agregar a Ver más tarde».")
 end sub
 
 function focusedGridItem() as dynamic
@@ -361,6 +483,205 @@ sub onGridSelected()
     end if
 end sub
 
+' ------------------------------------------------------------------ live channels
+
+sub showLive()
+    m.cats.visible = false
+    m.grid.visible = false
+    m.channels.visible = true
+    m.gridStatus.text = ""
+    m.guideTimer.control = "start"
+    if m.guide = invalid then runTask("guide", "", "onGuide")
+    if m.channelsNode <> invalid then
+        m.channels.content = m.channelsNode
+        refreshNow()
+        m.channels.jumpToItem = lastChannel()
+        if not m.tabsFocused then m.channels.setFocus(true)
+        return
+    end if
+    if m.list = "" then
+        m.gridStatus.text = "Falta el enlace de tu lista de canales." + Chr(10) + "Pulsa * y elige «Cambiar servidor o usuario»."
+        if not m.tabsFocused then m.top.setFocus(true)
+        return
+    end if
+    m.gridStatus.text = "Cargando canales..."
+    m.channels.content = CreateObject("roSGNode", "ContentNode")
+    if not m.tabsFocused then m.channels.setFocus(true)
+    runTask("m3u", m.list, "onM3u")
+end sub
+
+sub onM3u(ev as object)
+    t = ev.getRoSGNode()
+    if ev.getField() = "error" then
+        if m.mode = "live" then m.gridStatus.text = t.error
+        return
+    end if
+    if t.result = invalid then return
+    m.channelsNode = t.result
+    if m.mode <> "live" then return
+    m.gridStatus.text = ""
+    if m.channelsNode.getChildCount() = 0 then m.gridStatus.text = "La lista no tiene canales."
+    refreshNow()
+    m.channels.content = m.channelsNode
+    m.channels.jumpToItem = lastChannel()
+    if not m.tabsFocused then m.channels.setFocus(true)
+end sub
+
+sub onGuide(ev as object)
+    t = ev.getRoSGNode()
+    if ev.getField() = "error" or t.result = invalid then return
+    m.guide = t.result.guide
+    refreshNow()
+end sub
+
+function lastChannel() as integer
+    i = Val(readReg("lastChannel"))
+    if m.channelsNode = invalid then return 0
+    if i < 0 or i >= m.channelsNode.getChildCount() then return 0
+    return Int(i)
+end function
+
+' "Ahora: … · Luego: …" under every channel
+sub refreshNow()
+    if m.channelsNode = invalid then return
+    for i = 0 to m.channelsNode.getChildCount() - 1
+        ch = m.channelsNode.getChild(i)
+        pr = nowNext(ch.tvg)
+        text = ""
+        if pr.now <> invalid then
+            text = hhmm(pr.now[0]) + "  " + pr.now[2]
+            if pr.next <> invalid then text = text + "     ·     " + hhmm(pr.next[0]) + "  " + pr.next[2]
+        end if
+        ch.description = text
+    end for
+end sub
+
+function nowNext(tvg as string) as object
+    out = { now: invalid, next: invalid }
+    if m.guide = invalid or tvg = "" then return out
+    list = m.guide[tvg]
+    if list = invalid then return out
+    now = CreateObject("roDateTime").AsSeconds()
+    for i = 0 to list.Count() - 1
+        p = list[i]
+        if p[0] <= now and now < p[1] then
+            out.now = p
+            if i + 1 < list.Count() then out.next = list[i + 1]
+            return out
+        end if
+        if p[0] > now then
+            out.next = p
+            return out
+        end if
+    end for
+    return out
+end function
+
+function hhmm(secs as dynamic) as string
+    d = CreateObject("roDateTime")
+    d.FromSeconds(Int(secs))
+    d.ToLocalTime()
+    h = d.GetHours()
+    mi = d.GetMinutes()
+    hs = h.ToStr()
+    if h < 10 then hs = "0" + hs
+    ms = mi.ToStr()
+    if mi < 10 then ms = "0" + ms
+    return hs + ":" + ms
+end function
+
+sub onChannelSelected()
+    playChannel(m.channels.itemSelected)
+end sub
+
+function altIndex(name as string) as integer
+    a = ParseJson(readReg("alt"))
+    if type(a) <> "roAssociativeArray" then return 0
+    v = a[name]
+    if v = invalid then return 0
+    return v
+end function
+
+sub setAlt(name as string, i as integer)
+    a = ParseJson(readReg("alt"))
+    if type(a) <> "roAssociativeArray" then a = {}
+    a[name] = i
+    writeReg("alt", FormatJson(a))
+end sub
+
+sub playChannel(index as integer)
+    if m.channelsNode = invalid then return
+    n = m.channelsNode.getChildCount()
+    if n = 0 then return
+    if index < 0 then index = n - 1
+    if index >= n then index = 0
+    ch = m.channelsNode.getChild(index)
+    opts = ch.options
+    k = altIndex(ch.title)
+    if k >= opts.Count() then k = 0
+    url = opts[k].url
+    m.liveIndex = index
+    writeReg("lastChannel", index.ToStr())
+    m.liveMode = true
+    m.playing = invalid
+    m.resumeAt = 0
+    m.playTitle = ch.shortDescriptionLine2 + "   " + ch.title
+    m.osdLogo.uri = ch.hdPosterUrl
+    m.osdHelp.text = "arriba/abajo cambia de canal  ·  * opción de señal y subtítulos  ·  Atrás lista de canales"
+    fmt = "ts"
+    if Instr(1, LCase(url), ".m3u8") > 0 then fmt = "hls"
+    other = "hls"
+    if fmt = "hls" then other = "ts"
+    m.cands = [{ url: url, fmt: fmt }, { url: url, fmt: other }]
+    m.candIdx = 0
+    m.video.visible = true
+    startCandidate()
+    if opts.Count() > 1 then showToast(ch.title + "  ·  " + opts[k].label)
+end sub
+
+sub zap(delta as integer)
+    playChannel(m.liveIndex + delta)
+end sub
+
+sub showSignalMenu()
+    ch = m.channelsNode.getChild(m.liveIndex)
+    labels = []
+    actions = []
+    cur = altIndex(ch.title)
+    i = 0
+    for each o in ch.options
+        label = o.label
+        if i = cur then label = "> " + label
+        labels.push(label)
+        actions.push("o:" + i.ToStr())
+        i = i + 1
+    end for
+    labels.push("Subtítulos")
+    actions.push("subsLive")
+    labels.push("Cerrar")
+    actions.push("none")
+    showMenu(ch.title, labels, actions)
+end sub
+
+sub updateLiveOsd()
+    ch = m.channelsNode.getChild(m.liveIndex)
+    pr = nowNext(ch.tvg)
+    st = m.video.state
+    if pr.now <> invalid then
+        m.osdState.text = pr.now[2]
+        m.osdTime.text = hhmm(pr.now[0]) + " - " + hhmm(pr.now[1])
+        now = CreateObject("roDateTime").AsSeconds()
+        span = pr.now[1] - pr.now[0]
+        if span > 0 then m.osdBar.width = Int(1760 * (now - pr.now[0]) / span) else m.osdBar.width = 0
+    else
+        m.osdState.text = ""
+        m.osdTime.text = ""
+        m.osdBar.width = 0
+    end if
+    if st = "buffering" then m.osdState.text = "Cargando..."
+    if pr.next <> invalid then m.osdLeft.text = "Luego: " + hhmm(pr.next[0]) + "  " + pr.next[2] else m.osdLeft.text = ""
+end sub
+
 ' ------------------------------------------------------------------ one series
 
 sub openSeries(seriesId as string, title as string, poster as string)
@@ -370,7 +691,7 @@ sub openSeries(seriesId as string, title as string, poster as string)
     m.seriesName = title
     m.seriesCover = poster
     m.seriesTitle.text = title
-    m.seriesPlot.text = "Cargando capítulos…"
+    m.seriesPlot.text = "Cargando capítulos..."
     m.seriesPoster.uri = poster
     m.seriesNode = invalid
     m.seasons.content = CreateObject("roSGNode", "ContentNode")
@@ -427,7 +748,11 @@ end sub
 ' ------------------------------------------------------------------ player
 
 sub playItem(it as object)
+    m.liveMode = false
     m.playing = it
+    m.playTitle = it.title
+    m.osdLogo.uri = ""
+    m.osdHelp.text = "OK pausa  ·  izquierda/derecha 10 s  ·  rebobinar/adelantar 1 min  ·  * audio y subtítulos  ·  Atrás salir"
     m.resumeAt = 0
     h = findHistory(histKey(it))
     if h <> invalid then
@@ -445,7 +770,8 @@ sub startCandidate()
     content = CreateObject("roSGNode", "ContentNode")
     content.url = c.url
     content.streamFormat = c.fmt
-    content.title = m.playing.title
+    content.title = m.playTitle
+    if m.liveMode then content.live = true
     if m.resumeAt > 0 then content.playStart = m.resumeAt
     m.home.visible = false
     m.seriesView.visible = false
@@ -454,7 +780,7 @@ sub startCandidate()
     ' the keys come to the scene: our own controls (the Video node's own UI is off)
     m.top.setFocus(true)
     m.video.control = "play"
-    m.osdTitle.text = m.playing.title
+    m.osdTitle.text = m.playTitle
     showOsd()
     m.osdTimer.control = "start"
 end sub
@@ -475,7 +801,7 @@ function candidates(it as object) as object
     else if ext = "m3u8" then
         list.push({ url: base + ".m3u8", fmt: "hls" })
     end if
-    for each alt in [{ e: "m3u8", f: "hls" }, { e: "mp4", f: "mp4" }, { e: "mkv", f: "mkv" }]
+    for each alt in [{ e: "m3u8", f: "hls" }, { e: "ts", f: "ts" }, { e: "mp4", f: "mp4" }, { e: "mkv", f: "mkv" }]
         u = base + "." + alt.e
         seen = false
         for each c in list
@@ -493,11 +819,19 @@ sub onVideoState()
         m.candIdx = m.candIdx + 1
         if m.candIdx < m.cands.Count() then
             startCandidate()
+        else if m.liveMode then
+            m.osdState.text = "Sin señal en esta opción. Pulsa * para elegir otra."
+            showOsd()
+            showToast("Sin señal. Pulsa * para probar otra opción.")
         else
             msg = m.video.errorMsg
             closeVideo(false)
             showToast("No se pudo reproducir este título. " + msg)
         end if
+        return
+    else if state = "finished" and m.liveMode then
+        m.candIdx = 0
+        startCandidate()
         return
     else if state = "finished" then
         removeHistory(histKey(m.playing))
@@ -510,6 +844,7 @@ sub onVideoState()
 end sub
 
 sub onVideoPosition()
+    if m.liveMode then return
     at = m.video.position
     if at - m.lastSaved >= 10 or m.lastSaved - at >= 10 then
         m.lastSaved = at
@@ -524,7 +859,7 @@ sub seekBy(delta as integer)
     if target > m.video.duration - 5 then target = m.video.duration - 5
     m.video.seek = target
     sign = "+"
-    if delta < 0 then sign = "−"
+    if delta < 0 then sign = "-"
     showToast(sign + Abs(delta).ToStr() + " s  ·  " + clock(target))
     showOsd()
 end sub
@@ -555,16 +890,20 @@ end sub
 
 sub updateOsd()
     if not m.osd.visible then return
+    if m.liveMode then
+        updateLiveOsd()
+        return
+    end if
     dur = m.video.duration
     st = m.video.state
     stateText = ""
-    if st = "buffering" then stateText = "Cargando…"
+    if st = "buffering" then stateText = "Cargando..."
     if st = "paused" then stateText = "En pausa"
     m.osdState.text = stateText
     at = m.video.position
     m.osdTime.text = clock(at)
     if dur > 0 then
-        m.osdLeft.text = "−" + clock(dur - at) + "  ·  " + clock(dur)
+        m.osdLeft.text = "-" + clock(dur - at) + "  ·  " + clock(dur)
         m.osdBar.width = Int(1760 * at / dur)
     else
         m.osdLeft.text = ""
@@ -579,6 +918,14 @@ sub closeVideo(save as boolean)
     m.osd.visible = false
     m.osdTimer.control = "stop"
     m.playing = invalid
+    if m.liveMode then
+        m.liveMode = false
+        m.home.visible = true
+        refreshNow()
+        m.channels.jumpToItem = m.liveIndex
+        m.channels.setFocus(true)
+        return
+    end if
     if m.returnTo = "series" then
         m.seriesView.visible = true
         m.episodes.setFocus(true)
@@ -592,6 +939,10 @@ end sub
 ' ------------------------------------------------------------------ audio and subtitles
 
 sub showPlayerOptions()
+    if m.liveMode then
+        showSignalMenu()
+        return
+    end if
     showMenu("Reproducción", ["Idioma del audio", "Subtítulos", "Cerrar"], ["audio", "subs", "none"])
 end sub
 
@@ -607,7 +958,7 @@ sub showAudioMenu()
     for each t in tracks
         name = langName(t.Language)
         if t.Name <> invalid and t.Name <> "" and t.Name <> t.Language then name = name + " (" + t.Name + ")"
-        if t.Track = m.video.currentAudioTrack then name = "✓ " + name
+        if t.Track = m.video.currentAudioTrack then name = "> " + name
         labels.push(name)
         actions.push("a:" + t.Track)
     end for
@@ -622,7 +973,7 @@ sub showSubtitleMenu()
         for each t in tracks
             name = langName(t.Language)
             if t.Description <> invalid and t.Description <> "" then name = name + " (" + t.Description + ")"
-            if m.video.globalCaptionMode = "On" and t.TrackName = m.video.subtitleTrack then name = "✓ " + name
+            if m.video.globalCaptionMode = "On" and t.TrackName = m.video.subtitleTrack then name = "> " + name
             labels.push(name)
             actions.push("s:" + t.TrackName)
         end for
@@ -769,7 +1120,7 @@ function laterContent() as object
     return root
 end function
 
-' ------------------------------------------------------------------ options (✱ key)
+' ------------------------------------------------------------------ options (* key)
 
 sub showOptions()
     labels = []
@@ -802,7 +1153,7 @@ sub showOptions()
     actions.push("account")
     labels.push("Cancelar")
     actions.push("none")
-    showMenu("AerioTV VOD", labels, actions)
+    showMenu("TV/VOD", labels, actions)
 end sub
 
 sub showMenu(title as string, labels as object, actions as object)
@@ -852,6 +1203,14 @@ sub onMenuButton()
     else if action = "subs" then
         showSubtitleMenu()
         return
+    else if Left(action, 2) = "o:" then
+        ch = m.channelsNode.getChild(m.liveIndex)
+        setAlt(ch.title, Val(Mid(action, 3)))
+        playChannel(m.liveIndex)
+        return
+    else if action = "subsLive" then
+        showSubtitleMenu()
+        return
     else if Left(action, 2) = "a:" then
         m.video.audioTrack = Mid(action, 3)
     else if action = "s:off" then
@@ -866,6 +1225,8 @@ end sub
 sub restoreFocus()
     if m.video.visible then
         m.top.setFocus(true)
+    else if m.home.visible and m.mode = "live" and not m.tabsFocused then
+        m.channels.setFocus(true)
     else if m.seriesView.visible then
         m.episodes.setFocus(true)
     else if m.home.visible then
@@ -885,6 +1246,20 @@ end sub
 
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
+    if m.video.visible and m.liveMode then
+        if key = "back" then
+            closeVideo(false)
+        else if key = "up" or key = "channelup" then
+            zap(1)
+        else if key = "down" or key = "channeldown" then
+            zap(-1)
+        else if key = "options" then
+            showPlayerOptions()
+        else
+            showOsd()
+        end if
+        return true
+    end if
     if m.video.visible then
         if key = "back" then
             closeVideo(true)
@@ -911,18 +1286,21 @@ function onKeyEvent(key as string, press as boolean) as boolean
     end if
     if m.home.visible then
         if m.tabsFocused then
+            ' left/right only move the cursor; OK opens that section
             if key = "left" then
-                switchMode("movies")
+                moveTabCursor(-1)
             else if key = "right" then
-                switchMode("series")
-            else if key = "down" or key = "OK" then
+                moveTabCursor(1)
+            else if key = "OK" then
+                switchMode(m.tabCursor)
+            else if key = "down" then
                 focusTabs(false)
             else if key = "back" then
                 return false
             end if
             return true
         end if
-        if key = "up" and (m.cats.hasFocus() or m.grid.hasFocus()) then
+        if key = "up" and (m.grid.hasFocus() or (m.cats.hasFocus() and m.cats.itemFocused <= 0) or (m.channels.hasFocus() and m.channels.itemFocused <= 0)) then
             focusTabs(true)
             return true
         else if key = "right" and m.cats.hasFocus() then

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- One row of the channel list: number, logo, name and what is on now. -->
+<component name="ChannelItem" extends="Group">
+  <interface>
+    <field id="itemContent" type="node" onChange="showContent" />
+    <field id="focusPercent" type="float" onChange="showFocus" />
+  </interface>
+  <script type="text/brightscript" uri="ChannelItem.brs" />
+  <children>
+    <Label id="num" translation="[10,0]" width="90" height="88" horizAlign="right" vertAlign="center" font="font:MediumSystemFont" color="0x8A93AFFF" />
+    <Poster id="logo" translation="[120,14]" width="130" height="60" loadDisplayMode="scaleToFit" />
+    <Label id="name" translation="[280,8]" width="1480" font="font:MediumBoldSystemFont" color="0xFFFFFFFF" />
+    <Label id="now" translation="[280,50]" width="1480" font="font:SmallSystemFont" color="0xB0B8D0FF" />
+  </children>
+</component>

@@ -17,6 +17,8 @@ jobs:
         env:
           SERVER_XMLTV_URL: ${{ secrets.SERVER_XMLTV_URL }}
         run: python3 build_guide.py
+      - name: Guía liviana para el Roku
+        run: python3 guia_roku.py
       - name: Mantener activa la sincronización (Supabase pausa proyectos sin uso por 7 días)
         continue-on-error: true
         run: |
@@ -29,5 +31,5 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add guia.xml informe.txt
+          git add guia.xml informe.txt guia-roku.json
           git diff --cached --quiet || (git commit -m "Actualizar guía" && git push)

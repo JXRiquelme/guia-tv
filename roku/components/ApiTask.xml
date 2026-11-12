@@ -6,8 +6,9 @@
     <field id="server" type="string" />
     <field id="user" type="string" />
     <field id="pass" type="string" />
-    <field id="kind" type="string" />      <!-- auth | vodcats | seriescats | vod | series | info -->
-    <field id="param" type="string" />     <!-- category_id or series_id -->
+    <field id="kind" type="string" />      <!-- auth | vodcats | seriescats | vod | series | info | m3u | guide | search -->
+    <field id="param" type="string" />     <!-- category_id, series_id, list address or search text -->
+    <field id="mode" type="string" />      <!-- search: movies | series -->
     <field id="result" type="node" alwaysNotify="true" />
     <field id="error" type="string" alwaysNotify="true" />
   </interface>
