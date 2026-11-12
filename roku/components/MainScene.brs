@@ -93,6 +93,7 @@ sub init()
     m.returnTo = "home"
     m.lastSaved = 0
     m.tabsFocused = false
+    m.focusEpisodeId = ""
     m.osdHideAt = 0
     m.clock = CreateObject("roTimespan")
 
@@ -508,6 +509,13 @@ sub onGridSelected()
     if item = invalid then return
     if item.kind = "series" then
         openSeries(item.seriesId, item.title, item.hdPosterUrl)
+    else if item.kind = "episode" and item.seriesId <> "" then
+        ' a series in "Continuar viendo": open its episodes, standing on the one you were watching
+        name = item.title
+        cut = Instr(1, name, " · ")
+        if cut > 1 then name = Left(name, cut - 1)
+        m.focusEpisodeId = item.streamId
+        openSeries(item.seriesId, name, item.hdPosterUrl)
     else
         m.returnTo = "home"
         playItem({ kind: item.kind, streamId: item.streamId, ext: item.ext, title: item.title, poster: item.hdPosterUrl, seriesId: item.seriesId })
@@ -918,6 +926,7 @@ end sub
 ' ------------------------------------------------------------------ one series
 
 sub openSeries(seriesId as string, title as string, poster as string)
+    if m.focusEpisodeId = invalid then m.focusEpisodeId = ""
     m.home.visible = false
     m.seriesView.visible = true
     m.seriesId = seriesId
@@ -952,15 +961,42 @@ sub onSeriesInfo(ev as object)
         m.seriesPlot.text = "Esta serie no tiene capítulos disponibles."
         return
     end if
+    ' where you left each episode
+    for si = 0 to r.getChildCount() - 1
+        season = r.getChild(si)
+        for ei = 0 to season.getChildCount() - 1
+            e = season.getChild(ei)
+            h = findHistory("e" + e.streamId)
+            if h <> invalid and h.pos > 30 then e.title = e.title + "   (vas en " + clock(h.pos) + ")"
+        end for
+    end for
     m.seasons.content = r
     m.episodes.content = r.getChild(0)
+    target = m.focusEpisodeId
+    m.focusEpisodeId = ""
+    if target <> "" then
+        for si = 0 to r.getChildCount() - 1
+            season = r.getChild(si)
+            for ei = 0 to season.getChildCount() - 1
+                if season.getChild(ei).streamId = target then
+                    m.seasons.jumpToItem = si
+                    m.episodes.content = season
+                    m.episodes.jumpToItem = ei
+                    m.episodes.setFocus(true)
+                    return
+                end if
+            end for
+        end for
+    end if
     if r.getChildCount() > 1 then m.seasons.setFocus(true) else m.episodes.setFocus(true)
 end sub
 
 sub onSeasonFocused()
     if m.seriesNode = invalid then return
     s = m.seriesNode.getChild(m.seasons.itemFocused)
-    if s <> invalid then m.episodes.content = s
+    if s = invalid then return
+    if m.episodes.content <> invalid and m.episodes.content.isSameNode(s) then return
+    m.episodes.content = s
 end sub
 
 sub onSeasonSelected()
@@ -974,7 +1010,10 @@ sub onEpisodeSelected()
     e = s.getChild(m.episodes.itemSelected)
     if e = invalid then return
     m.returnTo = "series"
-    title = m.seriesName + " · " + s.title + " · " + e.title
+    epTitle = e.title
+    cut = Instr(1, epTitle, "   (vas en ")
+    if cut > 1 then epTitle = Left(epTitle, cut - 1)
+    title = m.seriesName + " · " + s.title + " · " + epTitle
     playItem({ kind: "episode", streamId: e.streamId, ext: e.ext, title: title, poster: m.seriesCover, seriesId: m.seriesId })
 end sub
 
