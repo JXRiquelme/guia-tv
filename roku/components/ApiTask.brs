@@ -185,7 +185,9 @@ end function
 ' ------------------------------------------------------------------ live channels (the curated list)
 
 sub loadM3u()
-    body = fetch(m.top.param)
+    ' the list packed inside the app (pkg:/...) or the address of the list
+    if Left(m.top.param, 4) = "pkg:" then body = ReadAsciiFile(m.top.param) else body = fetch(m.top.param)
+    if body = "" then body = invalid
     if body = invalid then
         m.top.error = "No se pudo descargar la lista de canales."
         return

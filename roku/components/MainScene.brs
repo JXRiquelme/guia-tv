@@ -499,7 +499,10 @@ sub showLive()
         if not m.tabsFocused then m.channels.setFocus(true)
         return
     end if
-    if m.list = "" then
+    src = m.list
+    ' no address typed: the list that comes inside the app
+    if src = "" and CreateObject("roFileSystem").Exists("pkg:/source/canales.m3u") then src = "pkg:/source/canales.m3u"
+    if src = "" then
         m.gridStatus.text = "Falta el enlace de tu lista de canales." + Chr(10) + "Pulsa * y elige «Cambiar servidor o usuario»."
         if not m.tabsFocused then m.top.setFocus(true)
         return
@@ -507,7 +510,7 @@ sub showLive()
     m.gridStatus.text = "Cargando canales..."
     m.channels.content = CreateObject("roSGNode", "ContentNode")
     if not m.tabsFocused then m.channels.setFocus(true)
-    runTask("m3u", m.list, "onM3u")
+    runTask("m3u", src, "onM3u")
 end sub
 
 sub onM3u(ev as object)
