@@ -11,8 +11,19 @@ sub init()
     m.home = m.top.findNode("home")
     m.tabMark = m.top.findNode("tabMark")
     m.tabLive = m.top.findNode("tabLive")
+    m.hint = m.top.findNode("hint")
     m.tabMovies = m.top.findNode("tabMovies")
-    m.channels = m.top.findNode("channels")
+    m.guide = m.top.findNode("guide")
+    m.guideList = m.top.findNode("guideList")
+    m.guideName = m.top.findNode("guideName")
+    m.guideNow = m.top.findNode("guideNow")
+    m.guideTimes = m.top.findNode("guideTimes")
+    m.guideNext = m.top.findNode("guideNext")
+    m.timeHead = m.top.findNode("timeHead")
+    m.side = m.top.findNode("side")
+    m.sideList = m.top.findNode("sideList")
+    m.keys = m.top.findNode("keys")
+    m.previewTimer = m.top.findNode("previewTimer")
     m.osdLogo = m.top.findNode("osdLogo")
     m.osdHelp = m.top.findNode("osdHelp")
     m.guideTimer = m.top.findNode("guideTimer")
@@ -43,7 +54,10 @@ sub init()
     m.cats.observeField("itemFocused", "onCatFocused")
     m.cats.observeField("itemSelected", "onCatSelected")
     m.grid.observeField("itemSelected", "onGridSelected")
-    m.channels.observeField("itemSelected", "onChannelSelected")
+    m.guideList.observeField("itemFocused", "onGuideFocused")
+    m.guideList.observeField("itemSelected", "onGuideSelected")
+    m.sideList.observeField("itemSelected", "onSideSelected")
+    m.previewTimer.observeField("fire", "onPreviewTimer")
     m.guideTimer.observeField("fire", "refreshNow")
     m.seasons.observeField("itemFocused", "onSeasonFocused")
     m.seasons.observeField("itemSelected", "onSeasonSelected")
@@ -59,12 +73,17 @@ sub init()
     m.pass = readReg("pass")
     m.list = readReg("list")
     if m.server = "" or m.user = "" or m.pass = "" or m.list = "" then loadDefaults()
-    m.mode = readReg("mode")
-    if m.mode <> "series" and m.mode <> "movies" then m.mode = "live"
+    ' the app always opens on TV, Canal 13, full screen
+    m.mode = "live"
+    m.firstStart = true
+    m.liveFull = false
+    m.liveIndex = invalid
+    m.guide2 = invalid
+    m.guideFilled = false
+    m.winStart = 0
     m.tabCursor = m.mode
     m.liveMode = false
     m.channelsNode = invalid
-    m.guide = invalid
     m.searchResults = invalid
     m.searchText = ""
     m.cache = {}
@@ -237,7 +256,8 @@ sub showHome()
         showLive()
         return
     end if
-    m.channels.visible = false
+    stopLive()
+    m.guide.visible = false
     m.cats.visible = true
     m.grid.visible = true
     m.guideTimer.control = "stop"
@@ -248,7 +268,7 @@ sub showHome()
     n.title = "Cargando..."
     m.cats.content = loading
     m.catIds = [""]
-    if m.tabsFocused then m.top.setFocus(true) else m.cats.setFocus(true)
+    if m.tabsFocused then m.keys.setFocus(true) else m.cats.setFocus(true)
     if m.mode = "series" then runTask("seriescats", "", "onCats") else runTask("vodcats", "", "onCats")
 end sub
 
@@ -260,6 +280,7 @@ end function
 
 ' the mark sits on the active section; while the tabs have the focus it follows the cursor (bright)
 sub paintTabs()
+    m.hint.visible = (m.mode <> "live")
     for each mode in ["live", "movies", "series"]
         t = tabNode(mode)
         if mode = m.mode then t.color = "0xFFFFFFFF" else t.color = "0x8A93AFFF"
@@ -278,9 +299,9 @@ sub focusTabs(on as boolean)
     m.tabCursor = m.mode
     paintTabs()
     if on then
-        m.top.setFocus(true)
+        m.keys.setFocus(true)
     else if m.mode = "live" then
-        m.channels.setFocus(true)
+        m.guideList.setFocus(true)
     else
         m.cats.setFocus(true)
     end if
@@ -483,20 +504,25 @@ sub onGridSelected()
     end if
 end sub
 
-' ------------------------------------------------------------------ live channels
+' ------------------------------------------------------------------ live TV
+' Full screen: up/down change channel, left opens the channel list over the picture, Back shows the
+' guide (channel playing small at the top, programme grid below; moving in the grid plays it there).
 
 sub showLive()
     m.cats.visible = false
     m.grid.visible = false
-    m.channels.visible = true
+    m.guide.visible = true
     m.gridStatus.text = ""
     m.guideTimer.control = "start"
-    if m.guide = invalid then runTask("guide", "", "onGuide")
+    if m.guide2 = invalid then runTask("guide", "", "onGuide")
     if m.channelsNode <> invalid then
-        m.channels.content = m.channelsNode
-        refreshNow()
-        m.channels.jumpToItem = lastChannel()
-        if not m.tabsFocused then m.channels.setFocus(true)
+        fillGuide()
+        if m.liveIndex = invalid then m.liveIndex = lastChannel()
+        m.guideList.jumpToItem = m.liveIndex
+        showGuideInfo(m.liveIndex)
+        setPip()
+        playChannel(m.liveIndex)
+        if not m.tabsFocused then m.guideList.setFocus(true)
         return
     end if
     src = m.list
@@ -504,12 +530,11 @@ sub showLive()
     if src = "" and CreateObject("roFileSystem").Exists("pkg:/source/canales.m3u") then src = "pkg:/source/canales.m3u"
     if src = "" then
         m.gridStatus.text = "Falta el enlace de tu lista de canales." + Chr(10) + "Pulsa * y elige «Cambiar servidor o usuario»."
-        if not m.tabsFocused then m.top.setFocus(true)
+        m.keys.setFocus(true)
         return
     end if
     m.gridStatus.text = "Cargando canales..."
-    m.channels.content = CreateObject("roSGNode", "ContentNode")
-    if not m.tabsFocused then m.channels.setFocus(true)
+    m.keys.setFocus(true)
     runTask("m3u", src, "onM3u")
 end sub
 
@@ -526,19 +551,40 @@ sub onM3u(ev as object)
     end if
     if t.result = invalid then return
     m.channelsNode = t.result
+    m.sideList.content = m.channelsNode
     if m.mode <> "live" then return
     m.gridStatus.text = ""
-    if m.channelsNode.getChildCount() = 0 then m.gridStatus.text = "La lista no tiene canales."
-    refreshNow()
-    m.channels.content = m.channelsNode
-    m.channels.jumpToItem = lastChannel()
-    if not m.tabsFocused then m.channels.setFocus(true)
+    if m.channelsNode.getChildCount() = 0 then
+        m.gridStatus.text = "La lista no tiene canales."
+        return
+    end if
+    fillGuide()
+    if m.firstStart then
+        ' opening the app: Canal 13, full screen
+        m.firstStart = false
+        playChannel(canal13Index())
+        goFull()
+    else
+        if m.liveIndex = invalid then m.liveIndex = lastChannel()
+        m.guideList.jumpToItem = m.liveIndex
+        setPip()
+        playChannel(m.liveIndex)
+        if not m.tabsFocused then m.guideList.setFocus(true)
+    end if
 end sub
+
+function canal13Index() as integer
+    for i = 0 to m.channelsNode.getChildCount() - 1
+        ch = m.channelsNode.getChild(i)
+        if ch.tvg = "canal13" or LCase(ch.title) = "canal 13" then return i
+    end for
+    return 0
+end function
 
 sub onGuide(ev as object)
     t = ev.getRoSGNode()
     if ev.getField() = "error" or t.result = invalid then return
-    m.guide = t.result.guide
+    m.guide2 = t.result.guide
     refreshNow()
 end sub
 
@@ -549,25 +595,74 @@ function lastChannel() as integer
     return Int(i)
 end function
 
-' "Ahora: … · Luego: …" under every channel
-sub refreshNow()
+' half-hour where the grid starts
+function windowStart() as integer
+    now = CreateObject("roDateTime").AsSeconds()
+    return Int(now / 1800) * 1800
+end function
+
+' programmes and window into every channel, then (re)draw the grid
+sub fillGuide()
     if m.channelsNode = invalid then return
+    win = windowStart()
+    m.winStart = win
     for i = 0 to m.channelsNode.getChildCount() - 1
         ch = m.channelsNode.getChild(i)
+        progs = []
+        if m.guide2 <> invalid and ch.tvg <> "" then
+            list = m.guide2[ch.tvg]
+            if list <> invalid then progs = list
+        end if
+        if ch.hasField("progs") then
+            ch.progs = progs
+            ch.winStart = win
+        else
+            ch.addFields({ progs: progs, winStart: win })
+        end if
         pr = nowNext(ch.tvg)
         text = ""
-        if pr.now <> invalid then
-            text = hhmm(pr.now[0]) + "  " + pr.now[2]
-            if pr.next <> invalid then text = text + "     ·     " + hhmm(pr.next[0]) + "  " + pr.next[2]
-        end if
+        if pr.now <> invalid then text = hhmm(pr.now[0]) + "  " + pr.now[2]
         ch.description = text
     end for
+    focused = m.guideList.itemFocused
+    m.guideList.content = m.channelsNode
+    if focused >= 0 then m.guideList.jumpToItem = focused
+    drawTimeHead(win)
+end sub
+
+sub drawTimeHead(win as integer)
+    m.timeHead.removeChildrenIndex(m.timeHead.getChildCount(), 0)
+    for k = 0 to 5
+        l = m.timeHead.createChild("Label")
+        l.translation = [336 + k * 243, 0]
+        l.font = "font:SmallestSystemFont"
+        l.color = "0x8A93AFFF"
+        l.text = hhmm(win + k * 1800)
+    end for
+end sub
+
+' every minute: the side list texts; every half hour: the grid moves on
+sub refreshNow()
+    if m.channelsNode = invalid then return
+    if m.winStart <> windowStart() or m.guide2 <> invalid and not m.guideFilled then
+        m.guideFilled = (m.guide2 <> invalid)
+        fillGuide()
+    else
+        for i = 0 to m.channelsNode.getChildCount() - 1
+            ch = m.channelsNode.getChild(i)
+            pr = nowNext(ch.tvg)
+            text = ""
+            if pr.now <> invalid then text = hhmm(pr.now[0]) + "  " + pr.now[2]
+            ch.description = text
+        end for
+    end if
+    if m.guide.visible and m.guideList.itemFocused >= 0 then showGuideInfo(m.guideList.itemFocused)
 end sub
 
 function nowNext(tvg as string) as object
     out = { now: invalid, next: invalid }
-    if m.guide = invalid or tvg = "" then return out
-    list = m.guide[tvg]
+    if m.guide2 = invalid or tvg = "" then return out
+    list = m.guide2[tvg]
     if list = invalid then return out
     now = CreateObject("roDateTime").AsSeconds()
     for i = 0 to list.Count() - 1
@@ -598,8 +693,106 @@ function hhmm(secs as dynamic) as string
     return hs + ":" + ms
 end function
 
-sub onChannelSelected()
-    playChannel(m.channels.itemSelected)
+sub showGuideInfo(index as integer)
+    if m.channelsNode = invalid then return
+    ch = m.channelsNode.getChild(index)
+    if ch = invalid then return
+    m.guideName.text = ch.shortDescriptionLine2 + "   " + ch.title
+    pr = nowNext(ch.tvg)
+    if pr.now <> invalid then
+        m.guideNow.text = pr.now[2]
+        m.guideTimes.text = hhmm(pr.now[0]) + " - " + hhmm(pr.now[1])
+    else
+        m.guideNow.text = "Sin información de programación"
+        m.guideTimes.text = ""
+    end if
+    if pr.next <> invalid then m.guideNext.text = "Luego  " + hhmm(pr.next[0]) + "  " + pr.next[2] else m.guideNext.text = ""
+end sub
+
+' moving in the grid: show it and, after a moment, play it in the small picture
+sub onGuideFocused()
+    i = m.guideList.itemFocused
+    showGuideInfo(i)
+    m.previewTimer.control = "stop"
+    m.previewTimer.control = "start"
+end sub
+
+sub onPreviewTimer()
+    if not m.guide.visible or m.liveFull then return
+    i = m.guideList.itemFocused
+    if i >= 0 and i <> m.liveIndex then playChannel(i)
+end sub
+
+sub onGuideSelected()
+    i = m.guideList.itemSelected
+    if i <> m.liveIndex or not m.video.visible then playChannel(i)
+    goFull()
+end sub
+
+sub onSideSelected()
+    i = m.sideList.itemSelected
+    closeSide()
+    if i <> m.liveIndex then playChannel(i)
+end sub
+
+sub setPip()
+    m.liveFull = false
+    m.video.translation = [1210, 40]
+    m.video.width = 650
+    m.video.height = 366
+    m.osd.visible = false
+end sub
+
+sub goFull()
+    m.liveFull = true
+    m.home.visible = false
+    m.video.translation = [0, 0]
+    m.video.width = 1920
+    m.video.height = 1080
+    m.keys.setFocus(true)
+    showOsd()
+end sub
+
+' Back while watching full screen: the guide, with this channel small at the top
+sub backToGuide()
+    closeSide()
+    m.home.visible = true
+    m.mode = "live"
+    paintTabs()
+    m.guide.visible = true
+    m.cats.visible = false
+    m.grid.visible = false
+    setPip()
+    showGuideInfo(m.liveIndex)
+    m.guideList.jumpToItem = m.liveIndex
+    m.guideList.setFocus(true)
+end sub
+
+sub openSide()
+    if m.channelsNode = invalid then return
+    m.osd.visible = false
+    m.side.visible = true
+    m.sideList.jumpToItem = m.liveIndex
+    m.sideList.setFocus(true)
+end sub
+
+sub closeSide()
+    if not m.side.visible then return
+    m.side.visible = false
+    m.keys.setFocus(true)
+end sub
+
+sub stopLive()
+    m.previewTimer.control = "stop"
+    if m.liveMode then
+        m.video.control = "stop"
+        m.video.visible = false
+        m.liveMode = false
+    end if
+    m.liveFull = false
+    m.video.translation = [0, 0]
+    m.video.width = 1920
+    m.video.height = 1080
 end sub
 
 function altIndex(name as string) as integer
@@ -634,19 +827,36 @@ sub playChannel(index as integer)
     m.playing = invalid
     m.resumeAt = 0
     m.playTitle = ch.shortDescriptionLine2 + "   " + ch.title
+    m.osdTitle.text = m.playTitle
     m.osdLogo.uri = ch.hdPosterUrl
-    m.osdHelp.text = "arriba/abajo cambia de canal  ·  * opción de señal y subtítulos  ·  Atrás lista de canales"
+    m.osdHelp.text = "arriba/abajo cambia de canal  ·  izquierda lista de canales  ·  * opción de señal  ·  Atrás guía"
     fmt = "ts"
     if Instr(1, LCase(url), ".m3u8") > 0 then fmt = "hls"
     other = "hls"
     if fmt = "hls" then other = "ts"
     m.cands = [{ url: url, fmt: fmt }, { url: url, fmt: other }]
     m.candIdx = 0
-    m.video.visible = true
-    startCandidate()
-    if opts.Count() > 1 then showToast(ch.title + "  ·  " + opts[k].label)
+    startLiveCandidate()
+    if m.liveFull then
+        showOsd()
+        if opts.Count() > 1 then showToast(ch.title + "  ·  " + opts[k].label)
+    end if
 end sub
 
+sub startLiveCandidate()
+    c = m.cands[m.candIdx]
+    content = CreateObject("roSGNode", "ContentNode")
+    content.url = c.url
+    content.streamFormat = c.fmt
+    content.title = m.playTitle
+    content.live = true
+    m.video.content = content
+    m.video.visible = true
+    m.video.control = "play"
+    m.osdTimer.control = "start"
+end sub
+
+' natural order: down = next channel in the list, up = previous
 sub zap(delta as integer)
     playChannel(m.liveIndex + delta)
 end sub
@@ -756,6 +966,7 @@ end sub
 ' ------------------------------------------------------------------ player
 
 sub playItem(it as object)
+    stopLive()
     m.liveMode = false
     m.playing = it
     m.playTitle = it.title
@@ -786,7 +997,7 @@ sub startCandidate()
     m.video.content = content
     m.video.visible = true
     ' the keys come to the scene: our own controls (the Video node's own UI is off)
-    m.top.setFocus(true)
+    m.keys.setFocus(true)
     m.video.control = "play"
     m.osdTitle.text = m.playTitle
     showOsd()
@@ -826,7 +1037,7 @@ sub onVideoState()
         if m.video.position > 5 then m.resumeAt = m.video.position
         m.candIdx = m.candIdx + 1
         if m.candIdx < m.cands.Count() then
-            startCandidate()
+            if m.liveMode then startLiveCandidate() else startCandidate()
         else if m.liveMode then
             m.osdState.text = "Sin señal en esta opción. Pulsa * para elegir otra."
             showOsd()
@@ -839,7 +1050,7 @@ sub onVideoState()
         return
     else if state = "finished" and m.liveMode then
         m.candIdx = 0
-        startCandidate()
+        startLiveCandidate()
         return
     else if state = "finished" then
         removeHistory(histKey(m.playing))
@@ -882,6 +1093,7 @@ sub togglePause()
 end sub
 
 sub showOsd()
+    if m.liveMode and not m.liveFull then return
     m.osd.visible = true
     m.osdHideAt = m.clock.TotalSeconds() + 5
     updateOsd()
@@ -926,14 +1138,6 @@ sub closeVideo(save as boolean)
     m.osd.visible = false
     m.osdTimer.control = "stop"
     m.playing = invalid
-    if m.liveMode then
-        m.liveMode = false
-        m.home.visible = true
-        refreshNow()
-        m.channels.jumpToItem = m.liveIndex
-        m.channels.setFocus(true)
-        return
-    end if
     if m.returnTo = "series" then
         m.seriesView.visible = true
         m.episodes.setFocus(true)
@@ -1231,15 +1435,17 @@ sub onMenuButton()
 end sub
 
 sub restoreFocus()
-    if m.video.visible then
-        m.top.setFocus(true)
+    if m.side.visible then
+        m.sideList.setFocus(true)
+    else if m.video.visible and (m.liveFull or not m.liveMode) then
+        m.keys.setFocus(true)
     else if m.home.visible and m.mode = "live" and not m.tabsFocused then
-        m.channels.setFocus(true)
+        m.guideList.setFocus(true)
     else if m.seriesView.visible then
         m.episodes.setFocus(true)
     else if m.home.visible then
         if m.tabsFocused then
-            m.top.setFocus(true)
+            m.keys.setFocus(true)
         else if m.grid.content <> invalid and m.grid.content.getChildCount() > 0 then
             m.grid.setFocus(true)
         else
@@ -1254,13 +1460,19 @@ end sub
 
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
-    if m.video.visible and m.liveMode then
+    if m.side.visible then
+        if key = "back" or key = "right" or key = "left" then closeSide()
+        return true
+    end if
+    if m.liveMode and m.liveFull then
         if key = "back" then
-            closeVideo(false)
-        else if key = "up" or key = "channelup" then
-            zap(1)
+            backToGuide()
         else if key = "down" or key = "channeldown" then
+            zap(1)
+        else if key = "up" or key = "channelup" then
             zap(-1)
+        else if key = "left" then
+            openSide()
         else if key = "options" then
             showPlayerOptions()
         else
@@ -1268,7 +1480,7 @@ function onKeyEvent(key as string, press as boolean) as boolean
         end if
         return true
     end if
-    if m.video.visible then
+    if m.video.visible and not m.liveMode then
         if key = "back" then
             closeVideo(true)
         else if key = "OK" or key = "play" then
@@ -1308,7 +1520,10 @@ function onKeyEvent(key as string, press as boolean) as boolean
             end if
             return true
         end if
-        if key = "up" and (m.grid.hasFocus() or (m.cats.hasFocus() and m.cats.itemFocused <= 0) or (m.channels.hasFocus() and m.channels.itemFocused <= 0)) then
+        if key = "up" and (m.grid.hasFocus() or (m.cats.hasFocus() and m.cats.itemFocused <= 0) or (m.guideList.hasFocus() and m.guideList.itemFocused <= 0)) then
+            focusTabs(true)
+            return true
+        else if key = "back" and m.mode = "live" then
             focusTabs(true)
             return true
         else if key = "right" and m.cats.hasFocus() then

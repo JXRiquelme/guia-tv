@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- One channel of the programme grid: number, logo, name, then its programmes laid out in time. -->
+<component name="GuideRow" extends="Group">
+  <interface>
+    <field id="itemContent" type="node" onChange="showContent" />
+    <field id="focusPercent" type="float" onChange="showFocus" />
+  </interface>
+  <script type="text/brightscript" uri="GuideRow.brs" />
+  <children>
+    <Rectangle id="head" width="330" height="76" color="0x161D36FF" />
+    <Label id="num" translation="[6,0]" width="52" height="76" horizAlign="right" vertAlign="center" font="font:SmallSystemFont" color="0x8A93AFFF" />
+    <Poster id="logo" translation="[70,13]" width="100" height="50" loadDisplayMode="scaleToFit" />
+    <Label id="name" translation="[180,0]" width="145" height="76" vertAlign="center" font="font:SmallestBoldSystemFont" color="0xFFFFFFFF" wrap="true" maxLines="2" />
+    <Group id="blocks" />
+  </children>
+</component>

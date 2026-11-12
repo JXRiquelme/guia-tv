@@ -21,8 +21,16 @@
       <Label id="tabSeries" translation="[570,32]" width="240" height="70" horizAlign="center" vertAlign="center" text="Series" font="font:MediumBoldSystemFont" />
       <Label id="hint" translation="[860,52]" width="1010" horizAlign="right" font="font:SmallestSystemFont" color="0x8A93AFFF"
              text="Arriba: Canales / Películas / Series  ·  * opciones" />
-      <MarkupList id="channels" translation="[60,140]" itemComponentName="ChannelItem" itemSize="[1800,88]" itemSpacing="[0,4]" numRows="10"
-                  vertFocusAnimationStyle="floatingFocus" visible="false" />
+      <!-- TV: what is on (left), the channel playing small (right), the programme grid below -->
+      <Group id="guide" visible="false">
+        <Label id="guideName" translation="[60,130]" width="1080" font="font:LargeBoldSystemFont" color="0xFFFFFFFF" />
+        <Label id="guideNow" translation="[60,200]" width="1080" wrap="true" maxLines="2" font="font:MediumSystemFont" color="0xFFFFFFFF" />
+        <Label id="guideTimes" translation="[60,300]" width="1080" font="font:SmallSystemFont" color="0xFFC857FF" />
+        <Label id="guideNext" translation="[60,350]" width="1080" font="font:SmallSystemFont" color="0xB0B8D0FF" />
+        <Group id="timeHead" translation="[60,452]" />
+        <MarkupList id="guideList" translation="[60,490]" itemComponentName="GuideRow" itemSize="[1800,76]" itemSpacing="[0,6]" numRows="7"
+                    drawFocusFeedback="false" vertFocusAnimationStyle="floatingFocus" />
+      </Group>
       <LabelList id="cats" translation="[60,140]" itemSize="[470,56]" numRows="16" vertFocusAnimationStyle="floatingFocus"
                  color="0xD8DCEAFF" focusedColor="0x0B1020FF" />
       <PosterGrid id="grid" translation="[590,140]" basePosterSize="[240,360]" itemSpacing="[22,74]" numColumns="5" numRows="2"
@@ -41,6 +49,15 @@
     </Group>
 
     <Video id="video" width="1920" height="1080" visible="false" enableUI="false" />
+
+    <!-- channel list over the picture (left arrow while watching TV) -->
+    <Group id="side" visible="false">
+      <Rectangle width="640" height="1080" color="0x0B1020EE" />
+      <Label translation="[40,40]" text="Canales" font="font:LargeBoldSystemFont" color="0xFFFFFFFF" />
+      <MarkupList id="sideList" translation="[20,110]" itemComponentName="ChannelItem" itemSize="[600,88]" itemSpacing="[0,4]" numRows="10"
+                  vertFocusAnimationStyle="floatingFocus" />
+    </Group>
+    <Group id="keys" focusable="true" />
 
     <!-- player controls -->
     <Group id="osd" visible="false">
@@ -63,5 +80,6 @@
     <Timer id="toastTimer" duration="3" repeat="false" />
     <Timer id="osdTimer" duration="1" repeat="true" />
     <Timer id="guideTimer" duration="60" repeat="true" />
+    <Timer id="previewTimer" duration="0.8" repeat="false" />
   </children>
 </component>
