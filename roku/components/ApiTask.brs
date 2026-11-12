@@ -161,7 +161,7 @@ sub buildSeries(root as object, json as object)
             if num <> "" then label = num + ". " + epTitle
             en.title = label
             en.hdPosterUrl = poster
-            en.addFields({ kind: "episode", streamId: toStr(e.id), ext: toStr(e.container_extension), seriesId: "", duration: dur, season: s.num })
+            en.addFields({ kind: "episode", streamId: toStr(e.id), ext: toStr(e.container_extension), seriesId: "", duration: dur, season: s.num, epNum: Int(Val(num)) })
         end for
     end for
 end sub

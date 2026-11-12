@@ -855,11 +855,28 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// For series: one entry each, the most advanced episode started (season, then number).
     var continueList: [Watch] {
-        var seen = Set<String>()
-        return history.filter { w in
-            w.episode == browserSeries && !w.finished && (!w.episode || seen.insert(w.seriesId.isEmpty ? w.streamId : w.seriesId).inserted)
+        var out: [Watch] = []
+        var at: [String: Int] = [:]
+        for w in history where w.episode == browserSeries && !w.finished {
+            guard w.episode else { out.append(w); continue }
+            let key = w.seriesId.isEmpty ? w.streamId : w.seriesId
+            if let i = at[key] {
+                if episodeOrder(w) > episodeOrder(out[i]) { out[i] = w }
+            } else {
+                at[key] = out.count
+                out.append(w)
+            }
         }
+        return out
+    }
+
+    private func episodeOrder(_ w: Watch) -> Int {
+        let parts = w.subtitle.split(separator: " ")
+        guard parts.count >= 3, parts[0].hasPrefix("T"), parts[2].hasPrefix("E"),
+              let s = Int(parts[0].dropFirst()), let e = Int(parts[2].dropFirst()) else { return -1 }
+        return s * 10_000 + e
     }
 
     var laterList: [VodItem] { later.filter { $0.series == browserSeries } }
@@ -1035,7 +1052,7 @@ final class AppModel: ObservableObject {
             self.openSeries = s
             self.episodes = list
             // the most recent unfinished episode of this series (or the one asked for)
-            let recent = self.history.first { $0.episode && $0.seriesId == s.streamId && !$0.finished }?.streamId
+            let recent = self.continueList.first { $0.episode && $0.seriesId == s.streamId }?.streamId
             let target = focus ?? playAfter?.streamId ?? recent
             let resume = list.first { e in self.history.first { $0.id == "e:" + e.id }.map { !$0.finished } ?? false }
             self.continueEpisode = list.contains { $0.id == target } ? target : resume?.id

@@ -1020,7 +1020,7 @@ sub onEpisodeSelected()
     cut = Instr(1, epTitle, "   (vas en ")
     if cut > 1 then epTitle = Left(epTitle, cut - 1)
     title = m.seriesName + " · " + s.title + " · " + epTitle
-    playItem({ kind: "episode", streamId: e.streamId, ext: e.ext, title: title, poster: m.seriesCover, seriesId: m.seriesId })
+    playItem({ kind: "episode", streamId: e.streamId, ext: e.ext, title: title, poster: m.seriesCover, seriesId: m.seriesId, sn: e.season, en: e.epNum })
 end sub
 
 ' ------------------------------------------------------------------ player
@@ -1346,7 +1346,10 @@ sub saveHistory(at as float, dur as float)
     it = m.playing
     if it = invalid or at < 5 then return
     key = histKey(it)
-    list = [{ k: key, kind: it.kind, id: it.streamId, ext: it.ext, t: it.title, p: it.poster, s: it.seriesId, pos: Int(at), dur: Int(dur) }]
+    entry = { k: key, kind: it.kind, id: it.streamId, ext: it.ext, t: it.title, p: it.poster, s: it.seriesId, pos: Int(at), dur: Int(dur) }
+    if it.sn <> invalid then entry.sn = it.sn
+    if it.en <> invalid then entry.en = it.en
+    list = [entry]
     for each h in loadHistory()
         if h.k <> key and list.Count() < 25 then list.push(h)
     end for
@@ -1361,9 +1364,36 @@ sub removeHistory(key as string)
     writeReg("history", FormatJson(list))
 end sub
 
+' one entry per series: the most advanced episode (season, then episode number) you started
+function continueList() as object
+    out = []
+    index = {}
+    for each h in historyFor(m.mode)
+        if h.kind <> "episode" or h.s = invalid or h.s = "" then
+            out.push(h)
+        else if not index.DoesExist(h.s) then
+            index[h.s] = out.Count()
+            out.push(h)
+        else
+            i = index[h.s]
+            if episodeOrder(h) > episodeOrder(out[i]) then out[i] = h
+        end if
+    end for
+    return out
+end function
+
+function episodeOrder(h as object) as integer
+    if h.sn <> invalid and h.en <> invalid then return h.sn * 10000 + h.en
+    ' older entries: read it from the title ("Serie · Temporada 1 · 2. Nombre")
+    rx = CreateObject("roRegex", "Temporada (\d+) · (\d+)\.", "")
+    mt = rx.Match(h.t)
+    if mt.Count() > 2 then return Int(Val(mt[1])) * 10000 + Int(Val(mt[2]))
+    return -1
+end function
+
 function continueContent() as object
     root = CreateObject("roSGNode", "ContentNode")
-    for each h in historyFor(m.mode)
+    for each h in continueList()
         n = root.createChild("ContentNode")
         n.addFields({ kind: h.kind, streamId: h.id, ext: h.ext, seriesId: h.s, histKey: h.k })
         n.title = h.t

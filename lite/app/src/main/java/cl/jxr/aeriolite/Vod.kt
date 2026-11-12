@@ -266,12 +266,25 @@ class History(private val prefs: SharedPreferences) {
     }
 
     /** Started but unfinished movies, or episodes (latest one per series), newest first. */
+    /** For series: one entry each, the most advanced episode started (season, then number). */
     fun continueWatching(series: Boolean): List<Watch> {
-        val seen = HashSet<String>()
-        return entries.filter { w ->
-            w.episode == series && (!series || seen.add(w.seriesId.ifEmpty { w.id })) && !w.finished
+        val open = entries.filter { it.episode == series && !it.finished }
+        if (!series) return open
+        val out = ArrayList<Watch>()
+        val at = HashMap<String, Int>()
+        for (w in open) {
+            val key = w.seriesId.ifEmpty { w.id }
+            val i = at[key]
+            if (i == null) { at[key] = out.size; out.add(w) }
+            else if (order(w) > order(out[i])) out[i] = w
         }
+        return out
     }
+
+    private val orderRx = Regex("^T(\\d+) · E(\\d+)")
+
+    private fun order(w: Watch): Int =
+        orderRx.find(w.subtitle)?.let { it.groupValues[1].toInt() * 10_000 + it.groupValues[2].toInt() } ?: -1
 
     fun remove(w: Watch) {
         if (w.episode && w.seriesId.isNotEmpty()) entries.removeAll { it.seriesId == w.seriesId }
