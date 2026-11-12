@@ -48,7 +48,7 @@ class Downloads(private val context: Context, private val prefs: SharedPreferenc
         val request = DownloadManager.Request(Uri.parse(url))
             .addRequestHeader("User-Agent", Net.USER_AGENT)
             .setTitle(label)
-            .setDescription("AerioTV Lite")
+            .setDescription(context.getString(R.string.app_name))
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_MOVIES, name)
         val id = try { manager.enqueue(request) } catch (e: Exception) { return false }

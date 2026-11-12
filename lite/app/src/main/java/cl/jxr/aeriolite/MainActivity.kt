@@ -4420,7 +4420,7 @@ class MainActivity : Activity() {
             glassy(0xFF0A1E5A.toInt(), 16, 2)
             visibility = View.GONE
         }
-        setup.addView(text(30f, bold = true).apply { this.text = "AerioTV Lite" })
+        setup.addView(text(30f, bold = true).apply { this.text = getString(R.string.app_name) })
         setupMessage = text(18f, MUTED).apply { maxLines = 3; gravity = Gravity.CENTER }
         setup.addView(setupMessage, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10); bottomMargin = dp(16) })
         setupInput = input("https://…").apply {
