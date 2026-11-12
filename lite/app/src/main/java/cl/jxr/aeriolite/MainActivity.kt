@@ -2250,8 +2250,10 @@ class MainActivity : Activity() {
                 else -> Toast.makeText(this, "Descargando… ${item.percent} %", Toast.LENGTH_SHORT).show()
             }
             is Watch -> {
-                if (item.episode && item.seriesId.isNotEmpty() && openSeries?.id != item.seriesId) {
-                    loadEpisodes(VodItem(true, item.seriesId, item.title, item.poster, item.ext, "", ""), playAfter = item)
+                // a series in "Seguir viendo": its episode list, standing on the one you were
+                // watching; OK there resumes it
+                if (item.episode && item.seriesId.isNotEmpty()) {
+                    openSeriesView(VodItem(true, item.seriesId, item.title, item.poster, item.ext, "", ""), item.id)
                 } else {
                     playVod(item)
                 }
@@ -2261,7 +2263,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun openSeriesView(series: VodItem) {
+    private fun openSeriesView(series: VodItem, focusEpisodeId: String? = null) {
         openSeries = series
         episodes = emptyList()
         seasonEpisodes = emptyList()
@@ -2277,7 +2279,7 @@ class MainActivity : Activity() {
         seriesView.visibility = View.VISIBLE
         if (GLASS) grid.animate().alpha(0f).setDuration(150).withEndAction { if (seriesView.visibility == View.VISIBLE) grid.visibility = View.INVISIBLE }.start()
         seriesView.animate().alpha(1f).translationX(0f).setDuration(220).start()
-        loadEpisodes(series, null)
+        loadEpisodes(series, null, focusEpisodeId)
     }
 
     private fun closeSeriesView() {
@@ -2331,7 +2333,7 @@ class MainActivity : Activity() {
         episodeList.setSelection(idx.coerceAtLeast(0))
     }
 
-    private fun loadEpisodes(series: VodItem, playAfter: Watch?) {
+    private fun loadEpisodes(series: VodItem, playAfter: Watch?, focusEpisodeId: String? = null) {
         val acc = xtream() ?: return
         val token = ++loadToken
         if (playAfter == null) {
@@ -2358,7 +2360,7 @@ class MainActivity : Activity() {
                     val seasons = it.map { e -> e.season }.distinct().size
                     seriesInfo.text = if (it.isEmpty()) "Esta serie no tiene episodios."
                     else "$seasons temporada${if (seasons == 1) "" else "s"}  ·  ${it.size} episodios"
-                    buildSeasons(null)
+                    buildSeasons(focusEpisodeId)
                     episodeList.requestFocus()
                 }.onFailure { seriesInfo.text = "No se pudo cargar: ${it.message}" }
             }
