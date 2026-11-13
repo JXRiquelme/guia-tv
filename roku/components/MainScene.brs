@@ -78,6 +78,7 @@ sub init()
     m.firstStart = true
     m.stayFull = false
     m.stallSince = 0
+    m.pickedAt = -10000
     m.liveFull = false
     m.liveIndex = invalid
     m.guide2 = invalid
@@ -673,15 +674,20 @@ sub refreshNow()
         m.guideFilled = (m.guide2 <> invalid)
         fillGuide()
     else
-        for i = 0 to m.channelsNode.getChildCount() - 1
-            ch = m.channelsNode.getChild(i)
-            pr = nowNext(ch.tvg)
-            text = ""
-            if pr.now <> invalid then text = hhmm(pr.now[0]) + "  " + pr.now[2]
-            ch.description = text
-        end for
+        updateNowTexts()
     end if
     if m.guide.visible and m.guideList.itemFocused >= 0 then showGuideInfo(m.guideList.itemFocused)
+end sub
+
+sub updateNowTexts()
+    if m.channelsNode = invalid then return
+    for i = 0 to m.channelsNode.getChildCount() - 1
+        ch = m.channelsNode.getChild(i)
+        pr = nowNext(ch.tvg)
+        text = ""
+        if pr.now <> invalid then text = hhmm(pr.now[0]) + "  " + pr.now[2]
+        if ch.description <> text then ch.description = text
+    end for
 end sub
 
 function nowNext(tvg as string) as object
@@ -754,12 +760,14 @@ sub onGuideSelected()
         switchMode(m.tabCursor)
         return
     end if
+    m.pickedAt = m.clock.TotalMilliseconds()
     i = m.guideList.itemSelected
     if i <> m.liveIndex or not m.video.visible then playChannel(i)
     goFull()
 end sub
 
 sub onSideSelected()
+    m.pickedAt = m.clock.TotalMilliseconds()
     i = m.sideList.itemSelected
     closeSide()
     if i <> m.liveIndex then playChannel(i)
@@ -812,11 +820,8 @@ end sub
 
 sub openSide()
     if m.channelsNode = invalid then return
-    ' bring the "now playing" texts up to date (skipped while in full screen)
-    full = m.liveFull
-    m.liveFull = false
-    refreshNow()
-    m.liveFull = full
+    ' only the "now playing" texts that changed: touching the whole list makes the picture blink
+    updateNowTexts()
     m.osd.visible = false
     m.side.visible = true
     m.sideList.jumpToItem = m.liveIndex
@@ -1642,7 +1647,8 @@ function onKeyEvent(key as string, press as boolean) as boolean
             openSide()
         else if key = "options" or key = "OK" then
             ' while video plays the Roku keeps * for its own menu: OK opens the signal options
-            showPlayerOptions()
+            ' (but not the OK that just picked a channel in a list)
+            if key = "options" or m.clock.TotalMilliseconds() - m.pickedAt > 400 then showPlayerOptions()
         else
             showOsd()
         end if
