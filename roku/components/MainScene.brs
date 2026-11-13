@@ -868,7 +868,7 @@ sub playChannel(index as integer)
     m.playTitle = ch.shortDescriptionLine2 + "   " + ch.title
     m.osdTitle.text = m.playTitle
     m.osdLogo.uri = ch.hdPosterUrl
-    m.osdHelp.text = "arriba/abajo cambia de canal  ·  izquierda lista de canales  ·  * opción de señal  ·  Atrás guía"
+    m.osdHelp.text = "OK opción de señal  ·  arriba/abajo cambia de canal  ·  izquierda lista de canales  ·  Atrás guía"
     fmt = "ts"
     if Instr(1, LCase(url), ".m3u8") > 0 then fmt = "hls"
     other = "hls"
@@ -1041,7 +1041,7 @@ sub playItem(it as object)
     m.playing = it
     m.playTitle = it.title
     m.osdLogo.uri = ""
-    m.osdHelp.text = "OK pausa  ·  izquierda/derecha 10 s  ·  rebobinar/adelantar 1 min  ·  * audio y subtítulos  ·  Atrás salir"
+    m.osdHelp.text = "OK pausa  ·  izquierda/derecha 10 s  ·  abajo audio y subtítulos  ·  rebobinar/adelantar 1 min  ·  Atrás salir"
     m.resumeAt = 0
     h = findHistory(histKey(it))
     if h <> invalid then
@@ -1110,9 +1110,9 @@ sub onVideoState()
         if m.candIdx < m.cands.Count() then
             if m.liveMode then startLiveCandidate() else startCandidate()
         else if m.liveMode then
-            m.osdState.text = "Sin señal en esta opción. Pulsa * para elegir otra."
+            m.osdState.text = "Sin señal en esta opción. Pulsa OK para elegir otra."
             showOsd()
-            showToast("Sin señal. Pulsa * para probar otra opción.")
+            showToast("Sin señal. Pulsa OK para probar otra opción.")
         else
             msg = m.video.errorMsg
             closeVideo(false)
@@ -1261,7 +1261,7 @@ sub checkAudio()
 end sub
 
 sub warnAudio()
-    showLongToast("Si no hay sonido: este título trae un audio que el Roku no reproduce. Prueba * → «Probar otra versión», o míralo en el móvil, la TV Android o el Mac.")
+    showLongToast("Si no hay sonido: este título trae un audio que el Roku no reproduce. Pulsa abajo → «Probar otra versión», o míralo en el móvil, la TV Android o el Mac.")
 end sub
 
 ' the same title from the next address the service offers (.m3u8 / .ts / .mp4 / .mkv), same minute
@@ -1629,7 +1629,8 @@ function onKeyEvent(key as string, press as boolean) as boolean
             zap(-1)
         else if key = "left" then
             openSide()
-        else if key = "options" then
+        else if key = "options" or key = "OK" then
+            ' while video plays the Roku keeps * for its own menu: OK opens the signal options
             showPlayerOptions()
         else
             showOsd()
@@ -1649,7 +1650,7 @@ function onKeyEvent(key as string, press as boolean) as boolean
             seekBy(-60)
         else if key = "fastforward" then
             seekBy(60)
-        else if key = "options" then
+        else if key = "options" or key = "down" or key = "up" then
             showPlayerOptions()
         else
             showOsd()
