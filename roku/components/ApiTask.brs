@@ -192,15 +192,20 @@ sub loadM3u()
         m.top.error = "No se pudo descargar la lista de canales."
         return
     end if
-    root = CreateObject("roSGNode", "ContentNode")
+    ' same reading as the Android app: #EXTALT lines and "Name (Op. 2)" entries become options of "Name"
     lines = body.Split(Chr(10))
     cur = invalid
     rxAttr = CreateObject("roRegex", "([a-zA-Z-]+)=" + Chr(34) + "([^" + Chr(34) + "]*)" + Chr(34), "")
-    number = 0
+    rxOp = CreateObject("roRegex", "\s*\((?:Op\.?|Opci.{1,2}n)\s*(\d+)\)\s*$", "i")
+    rxQ = CreateObject("roRegex", "\((F?HD|SD|4K)\)", "i")
+    chans = []
+    byName = {}
+    target = invalid
     for each raw in lines
         line = raw.Trim()
-        if Left(line, 8) = "#EXTINF:" then
-            cur = { name: "", logo: "", tvg: "", alts: [] }
+        up = UCase(Left(line, 8))
+        if up = "#EXTINF:" then
+            cur = { name: "", logo: "", tvg: "" }
             comma = lastComma(line)
             if comma > 0 then cur.name = Mid(line, comma + 1).Trim()
             for each mt in rxAttr.MatchAll(line)
@@ -208,26 +213,67 @@ sub loadM3u()
                 if k = "tvg-logo" then cur.logo = mt[2]
                 if k = "tvg-id" then cur.tvg = mt[2]
             end for
-        else if Left(line, 8) = "#EXTALT:" and cur <> invalid then
+        else if up = "#EXTALT:" then
             rest = Mid(line, 9)
-            bar = Instr(1, rest, "|")
-            if bar > 0 then cur.alts.push({ label: Left(rest, bar - 1).Trim(), url: Mid(rest, bar + 1).Trim() })
-        else if line <> "" and Left(line, 1) <> "#" and cur <> invalid then
-            number = number + 1
-            n = root.createChild("ContentNode")
-            n.title = cur.name
-            n.hdPosterUrl = cur.logo
-            n.shortDescriptionLine2 = number.ToStr()
-            opts = [{ label: "Opción 1", url: line }]
-            for each a in cur.alts
-                opts.push(a)
+            bar = 0
+            for i = Len(rest) to 1 step -1
+                if Mid(rest, i, 1) = "|" then
+                    bar = i
+                    exit for
+                end if
             end for
-            n.addFields({ tvg: cur.tvg, options: opts, num: number })
+            if bar > 1 and target <> invalid then
+                u = Mid(rest, bar + 1).Trim()
+                if LCase(Left(u, 4)) = "http" then target.alts.push({ label: Left(rest, bar - 1).Trim(), url: u })
+            end if
+        else if line <> "" and Left(line, 1) <> "#" and cur <> invalid then
+            info = cur
             cur = invalid
+            if LCase(Left(line, 4)) = "http" then target = addChannel(chans, byName, info, line, rxOp, target)
         end if
+    end for
+    root = CreateObject("roSGNode", "ContentNode")
+    number = 0
+    for each ch in chans
+        number = number + 1
+        n = root.createChild("ContentNode")
+        n.title = ch.name
+        n.hdPosterUrl = ch.logo
+        n.shortDescriptionLine2 = number.ToStr()
+        opts = [{ label: "Opción 1", url: ch.url }]
+        seen = {}
+        seen[ch.url] = true
+        for each a in ch.alts
+            if seen[a.url] = invalid then
+                seen[a.url] = true
+                label = "Opción " + (opts.Count() + 1).ToStr()
+                q = rxQ.Match(a.label)
+                if q.Count() > 0 then label = label + " " + q[0]
+                opts.push({ label: label, url: a.url })
+            end if
+        end for
+        n.addFields({ tvg: ch.tvg, options: opts, num: number })
     end for
     m.top.result = root
 end sub
+
+' one entry of the list: a new channel, or "Name (Op. 2)" added as an option of "Name"
+function addChannel(chans as object, byName as object, info as object, url as string, rxOp as object, target as object) as dynamic
+    name = info.name
+    if name = "" then name = "Canal " + (chans.Count() + 1).ToStr()
+    op = rxOp.Match(name)
+    if op.Count() > 1 then
+        owner = byName[LCase(rxOp.Replace(name, "").Trim())]
+        if owner <> invalid then
+            owner.alts.push({ label: "Opción " + op[1], url: url })
+            return invalid
+        end if
+    end if
+    ch = { name: name, logo: info.logo, tvg: info.tvg, url: url, alts: [] }
+    chans.push(ch)
+    if byName[LCase(name)] = invalid then byName[LCase(name)] = ch
+    return ch
+end function
 
 function lastComma(line as string) as integer
     ' the name follows the last comma outside the quoted attributes
