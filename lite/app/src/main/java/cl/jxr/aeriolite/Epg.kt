@@ -54,17 +54,17 @@ class EpgView(context: Context, private val host: Host) : View(context) {
 
     // Phone app: translucent "glass" cells over the blurred video; TV app: solid colours (faster)
     private val glass = !BuildConfig.TV
-    private val bgPaint = Paint().apply { color = if (glass) Color.TRANSPARENT else 0xFF0A1238.toInt() }
-    private val cellPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (glass) 0x1FFFFFFF else 0xFF16214A.toInt() }
-    private val nowCellPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (glass) 0x33FFFFFF else 0xFF1E2C5E.toInt() }
-    private val selPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (glass) 0x66FFFFFF else 0xFF2F6FEB.toInt() }
-    private val chanPaint = Paint().apply { color = if (glass) 0x14FFFFFF else 0xFF0E1842.toInt() }
-    private val chanSelPaint = Paint().apply { color = if (glass) 0x38FFFFFF else 0xFF233A80.toInt() }
+    private val bgPaint = Paint().apply { color = if (glass) Color.TRANSPARENT else 0xFF000000.toInt() }
+    private val cellPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (glass) 0x1FFFFFFF else 0xFF17181B.toInt() }
+    private val nowCellPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (glass) 0x33FFFFFF else 0xFF26282D.toInt() }
+    private val selPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (glass) 0x66FFFFFF else 0xFF55585F.toInt() }
+    private val chanPaint = Paint().apply { color = if (glass) 0x14FFFFFF else 0xFF0E0F11.toInt() }
+    private val chanSelPaint = Paint().apply { color = if (glass) 0x38FFFFFF else 0xFF34363C.toInt() }
     private val linePaint = Paint().apply { color = 0xFFFF5A5A.toInt(); strokeWidth = dp(2f) }
     private val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = dp(15f); isFakeBoldText = true }
-    private val timePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = if (!BuildConfig.TV) 0xFFD0D3DA.toInt() else 0xFFB8C7F0.toInt(); textSize = dp(12f) }
+    private val timePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = if (!BuildConfig.TV) 0xFFD0D3DA.toInt() else 0xFFD0D3DA.toInt(); textSize = dp(12f) }
     private val namePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = dp(15f); isFakeBoldText = true }
-    private val numPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = if (!BuildConfig.TV) 0xFFA3A8B3.toInt() else 0xFF8FA0CC.toInt(); textSize = dp(13f) }
+    private val numPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = if (!BuildConfig.TV) 0xFFA3A8B3.toInt() else 0xFFA3A8B3.toInt(); textSize = dp(13f) }
     private val hm = SimpleDateFormat("HH:mm", Locale.getDefault())
     private val rect = RectF()
 

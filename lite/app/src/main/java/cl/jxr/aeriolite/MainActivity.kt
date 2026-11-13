@@ -102,13 +102,13 @@ class MainActivity : Activity() {
         const val SIDE_TOP = 20
         /** Height of the Canales/Películas/Series bar (same as in the catalogue). */
         const val TABS_H = 58
-        val ACCENT = if (GLASS) 0xFFFFD27A.toInt() else 0xFF7FD3FF.toInt()
-        val MUTED = if (GLASS) 0xFFD0D3DA.toInt() else 0xFFB8C7F0.toInt()
-        val HINT = if (GLASS) 0xFFA3A8B3.toInt() else 0xFF8FA0CC.toInt()
+        val ACCENT = if (GLASS) 0xFFFFD27A.toInt() else 0xFFFFD27A.toInt()
+        val MUTED = if (GLASS) 0xFFD0D3DA.toInt() else 0xFFD0D3DA.toInt()
+        val HINT = if (GLASS) 0xFFA3A8B3.toInt() else 0xFFA3A8B3.toInt()
         /** Selection / focus. */
-        val BLUE = if (GLASS) 0x4DFFFFFF else 0xFF2F6FEB.toInt()
+        val BLUE = if (GLASS) 0x4DFFFFFF else 0xFF55585F.toInt()
         /** Active chip / tab. */
-        val CHIP = if (GLASS) 0x3DFFFFFF else 0xFF3B5BA8.toInt()
+        val CHIP = if (GLASS) 0x3DFFFFFF else 0xFF2E3036.toInt()
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -1073,7 +1073,7 @@ class MainActivity : Activity() {
             setImageResource(res)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             setPadding(dp(8), dp(8), dp(8), dp(8))
-            background = surfaceBg(0xE60A1E5A.toInt(), 19, 0, 19)
+            background = surfaceBg(0xE6101114.toInt(), 19, 0, 19)
             isClickable = true
             setOnClickListener { action() }
         }
@@ -1086,7 +1086,7 @@ class MainActivity : Activity() {
             compoundDrawablePadding = dp(6)
             gravity = Gravity.CENTER
             setPadding(dp(12), 0, dp(14), 0)
-            background = surfaceBg(0xE60A1E5A.toInt(), 20, 0, 20)
+            background = surfaceBg(0xE6101114.toInt(), 20, 0, 20)
             isClickable = true
             setOnClickListener { chooseOption() }
         }
@@ -1945,7 +1945,7 @@ class MainActivity : Activity() {
     private fun markTabs(tabs: List<TextView>, active: Int) {
         tabs.forEachIndexed { i, t ->
             t.setTextColor(if (i == active) ACCENT else Color.WHITE)
-            t.background = focusBg(10, if (i == active) (if (GLASS) 0x29FFFFFF else 0x332F6FEB) else Color.TRANSPARENT)
+            t.background = focusBg(10, if (i == active) (if (GLASS) 0x29FFFFFF else 0x33FFFFFF) else Color.TRANSPARENT)
         }
     }
 
@@ -3424,7 +3424,7 @@ class MainActivity : Activity() {
                 topButtons.orientation = if (row) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
                 for (i in 0 until topButtons.childCount) {
                     val b = topButtons.getChildAt(i)
-                    b.background = if (row) null else surfaceBg(0xE60A1E5A.toInt(), 24)
+                    b.background = if (row) null else surfaceBg(0xE6101114.toInt(), 24)
                     if (Build.VERSION.SDK_INT >= 21) b.elevation = if (row) 0f else dp(6).toFloat()
                     (b.layoutParams as LinearLayout.LayoutParams).let {
                         it.bottomMargin = if (row) 0 else dp(10)
@@ -3751,7 +3751,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             if (GLASS) background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xFF23262E.toInt(), 0xFF08090B.toInt()))
-            else setBackgroundColor(0xFF0B1230.toInt())
+            else setBackgroundColor(0xFF000000.toInt())
             visibility = View.GONE
         }
         cardLogo = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
@@ -3769,7 +3769,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             if (compact) setPadding(dp(12), dp(8), dp(10), dp(8)) else setPadding(dp(20), dp(14), dp(20), dp(14))
-            glassy(0xE60A1E5A.toInt(), if (compact) 12 else 14)
+            glassy(0xE6101114.toInt(), if (compact) 12 else 14)
             visibility = View.GONE
         }
         infoLogo = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
@@ -3822,7 +3822,7 @@ class MainActivity : Activity() {
             setImageResource(icon)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             setPadding(dp(11), dp(11), dp(11), dp(11))
-            glassy(0xE60A1E5A.toInt(), 24)
+            glassy(0xE6101114.toInt(), 24)
             isClickable = true
             setOnClickListener { action() }
         }
@@ -3855,13 +3855,13 @@ class MainActivity : Activity() {
 
         // Brightness (left) and volume (right) sliders, lower half of each side
         brightSlider = VerticalSlider(this, getDrawable(R.drawable.ic_brightness)!!.mutate()).apply {
-            background = surfaceBg(0xE60A1E5A.toInt(), 22, 0, 22)
+            background = surfaceBg(0xE6101114.toInt(), 22, 0, 22)
             visibility = View.GONE
             onChange = { setBrightness(it) }
             onTouchState = { holdControls(it) }
         }
         volSlider = VerticalSlider(this, getDrawable(R.drawable.ic_volume)!!.mutate()).apply {
-            background = surfaceBg(0xE60A1E5A.toInt(), 22, 0, 22)
+            background = surfaceBg(0xE6101114.toInt(), 22, 0, 22)
             visibility = View.GONE
             onChange = { setVolume(it) }
             onTouchState = { holdControls(it) }
@@ -3888,7 +3888,7 @@ class MainActivity : Activity() {
         vodBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22), dp(14), dp(22), dp(14))
-            glassy(0xE60A1E5A.toInt(), 14)
+            glassy(0xE6101114.toInt(), 14)
             visibility = View.GONE
         }
         val compactBar = GLASS
@@ -4101,7 +4101,7 @@ class MainActivity : Activity() {
         panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isClickable = true
-            if (GLASS) glassy(0, 0, 1, 26) else setBackgroundColor(0xF20A1238.toInt())
+            if (GLASS) glassy(0, 0, 1, 26) else setBackgroundColor(0xF2000000.toInt())
             setPadding(dp(14), dp(14), dp(14), dp(10))
             visibility = View.GONE
         }
@@ -4150,7 +4150,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             isClickable = true
             if (GLASS) background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xFA1A1C22.toInt(), 0xFF070809.toInt()))
-            else setBackgroundColor(0xFA081030.toInt())
+            else setBackgroundColor(0xFA000000.toInt())
             setPadding(dp(24), dp(14), dp(24), dp(4))
             visibility = View.GONE
         }
@@ -4271,13 +4271,13 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             isClickable = true
             // phones: no box of its own, it shares the catalogue's background (the grid is hidden meanwhile)
-            if (!GLASS) setBackgroundColor(0xFF081030.toInt())
+            if (!GLASS) setBackgroundColor(0xFF000000.toInt())
             visibility = View.GONE
         }
         val seriesLeft = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         seriesPoster = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            background = box(if (GLASS) 0xFF1E2027.toInt() else 0xFF141C3A.toInt(), 8)
+            background = box(if (GLASS) 0xFF1E2027.toInt() else 0xFF1C1D21.toInt(), 8)
         }
         seriesLeft.addView(seriesPoster, LinearLayout.LayoutParams(dp(180), dp(270)))
         seriesText = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -4339,7 +4339,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             isClickable = true
             setPadding(dp(24), dp(20), dp(24), dp(16))
-            glassy(0xFF0A1E5A.toInt(), 16, 2)
+            glassy(0xFF101114.toInt(), 16, 2)
             visibility = View.GONE
         }
         filterTitle = text(22f, bold = true)
@@ -4367,7 +4367,7 @@ class MainActivity : Activity() {
         epgBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isClickable = true
-            if (GLASS) glassy(0, 0, 1, 26) else setBackgroundColor(0xF2081030.toInt())
+            if (GLASS) glassy(0, 0, 1, 26) else setBackgroundColor(0xF2000000.toInt())
             setPadding(dp(20), dp(12), dp(20), dp(10))
             visibility = View.GONE
         }
@@ -4421,7 +4421,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             isClickable = true
             setPadding(dp(20), dp(18), dp(20), dp(14))
-            glassy(0xF20A1E5A.toInt(), 16, 2)
+            glassy(0xF2101114.toInt(), 16, 2)
         }
         pickerTitle = text(21f, bold = true).apply { maxLines = 4; ellipsize = null }
         pickerBox.addView(pickerTitle, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
@@ -4449,7 +4449,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_HORIZONTAL
             isClickable = true
             setPadding(dp(36), dp(28), dp(36), dp(28))
-            glassy(0xFF0A1E5A.toInt(), 16, 2)
+            glassy(0xFF101114.toInt(), 16, 2)
             visibility = View.GONE
         }
         setup.addView(text(30f, bold = true).apply { this.text = getString(R.string.app_name) })
@@ -4473,7 +4473,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_HORIZONTAL
             isClickable = true
             setPadding(dp(36), dp(28), dp(36), dp(28))
-            glassy(0xFF0A1E5A.toInt(), 16, 2)
+            glassy(0xFF101114.toInt(), 16, 2)
             visibility = View.GONE
         }
         account.addView(text(28f, bold = true).apply { this.text = "Películas y series" })
@@ -4564,7 +4564,7 @@ class MainActivity : Activity() {
         val frame = FrameLayout(this@MainActivity)
         val poster = ImageView(this@MainActivity).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            background = box(if (GLASS) 0xFF1E2027.toInt() else 0xFF141C3A.toInt(), 8)
+            background = box(if (GLASS) 0xFF1E2027.toInt() else 0xFF1C1D21.toInt(), 8)
         }
         frame.addView(poster, FrameLayout.LayoutParams(-1, -1))
         val placeholder = text(15f, MUTED).apply {
