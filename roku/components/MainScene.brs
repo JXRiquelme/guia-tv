@@ -667,6 +667,8 @@ end sub
 ' every minute: the side list texts; every half hour: the grid moves on
 sub refreshNow()
     if m.channelsNode = invalid then return
+    ' full screen: the hidden lists are left alone (they are brought up to date on the way back)
+    if m.liveFull then return
     if m.winStart <> windowStart() or m.guide2 <> invalid and not m.guideFilled then
         m.guideFilled = (m.guide2 <> invalid)
         fillGuide()
@@ -793,6 +795,8 @@ end sub
 ' Back while watching full screen: the guide, with this channel small at the top
 sub backToGuide()
     m.stayFull = false
+    m.liveFull = false
+    refreshNow()
     closeSide()
     m.home.visible = true
     m.mode = "live"
@@ -1108,6 +1112,7 @@ sub onVideoState()
         if m.video.position > 5 then m.resumeAt = m.video.position
         m.candIdx = m.candIdx + 1
         if m.candIdx < m.cands.Count() then
+            if m.liveMode and m.liveFull then showToast("Reconectando (error: " + m.video.errorMsg + ")")
             if m.liveMode then startLiveCandidate() else startCandidate()
         else if m.liveMode then
             m.osdState.text = "Sin señal en esta opción. Pulsa OK para elegir otra."
@@ -1120,6 +1125,7 @@ sub onVideoState()
         end if
         return
     else if state = "finished" and m.liveMode then
+        if m.liveFull then showToast("Reconectando (el servidor cortó la transmisión)")
         m.candIdx = 0
         startLiveCandidate()
         return
@@ -1185,7 +1191,7 @@ sub onOsdTick()
         if m.stallSince = 0 then m.stallSince = m.clock.TotalSeconds()
         if m.clock.TotalSeconds() - m.stallSince >= 12 then
             m.stallSince = 0
-            if m.liveFull then showToast("Reconectando...")
+            if m.liveFull then showToast("Reconectando (señal trabada)")
             startLiveCandidate()
         end if
     else
