@@ -812,6 +812,11 @@ end sub
 
 sub openSide()
     if m.channelsNode = invalid then return
+    ' bring the "now playing" texts up to date (skipped while in full screen)
+    full = m.liveFull
+    m.liveFull = false
+    refreshNow()
+    m.liveFull = full
     m.osd.visible = false
     m.side.visible = true
     m.sideList.jumpToItem = m.liveIndex
