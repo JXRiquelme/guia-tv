@@ -76,6 +76,8 @@ sub init()
     ' the app always opens on TV, Canal 13, full screen
     m.mode = "live"
     m.firstStart = true
+    m.stayFull = false
+    m.stallSince = 0
     m.liveFull = false
     m.liveIndex = invalid
     m.guide2 = invalid
@@ -541,7 +543,7 @@ sub showLive()
         showGuideInfo(m.liveIndex)
         setPip()
         playChannel(m.liveIndex)
-        if not m.tabsFocused then m.guideList.setFocus(true)
+        if m.liveFull then m.keys.setFocus(true) else if not m.tabsFocused then m.guideList.setFocus(true)
         return
     end if
     src = m.list
@@ -590,7 +592,7 @@ sub onM3u(ev as object)
         m.guideList.jumpToItem = m.liveIndex
         setPip()
         playChannel(m.liveIndex)
-        if not m.tabsFocused then m.guideList.setFocus(true)
+        if m.liveFull then m.keys.setFocus(true) else if not m.tabsFocused then m.guideList.setFocus(true)
     end if
 end sub
 
@@ -762,6 +764,11 @@ sub onSideSelected()
 end sub
 
 sub setPip()
+    ' full screen only ends when the user presses Back: nothing else may shrink the picture
+    if m.stayFull and m.liveMode then
+        goFull()
+        return
+    end if
     ' the small picture only exists inside the guide
     m.home.visible = true
     m.guide.visible = true
@@ -774,6 +781,7 @@ end sub
 
 sub goFull()
     m.liveFull = true
+    m.stayFull = true
     m.home.visible = false
     m.video.translation = [0, 0]
     m.video.width = 1920
@@ -784,6 +792,7 @@ end sub
 
 ' Back while watching full screen: the guide, with this channel small at the top
 sub backToGuide()
+    m.stayFull = false
     closeSide()
     m.home.visible = true
     m.mode = "live"
@@ -819,6 +828,7 @@ sub stopLive()
         m.liveMode = false
     end if
     m.liveFull = false
+    m.stayFull = false
     m.video.translation = [0, 0]
     m.video.width = 1920
     m.video.height = 1080
@@ -1170,6 +1180,17 @@ sub onOsdTick()
     end if
     ' never a small picture over an empty screen: TV without the guide is full screen
     if m.liveMode and not m.liveFull and not m.home.visible and not m.login.visible then goFull()
+    ' a live channel stuck loading: reconnect it right here, without leaving the screen
+    if m.liveMode and m.video.state = "buffering" then
+        if m.stallSince = 0 then m.stallSince = m.clock.TotalSeconds()
+        if m.clock.TotalSeconds() - m.stallSince >= 12 then
+            m.stallSince = 0
+            if m.liveFull then showToast("Reconectando...")
+            startLiveCandidate()
+        end if
+    else
+        m.stallSince = 0
+    end if
     updateOsd()
     if m.osd.visible and m.video.state = "playing" and m.clock.TotalSeconds() >= m.osdHideAt then m.osd.visible = false
 end sub
