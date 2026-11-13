@@ -79,6 +79,7 @@ sub init()
     m.stayFull = false
     m.stallSince = 0
     m.pickedAt = -10000
+    m.sideOpen = false
     m.liveFull = false
     m.liveIndex = invalid
     m.guide2 = invalid
@@ -823,14 +824,16 @@ sub openSide()
     ' only the "now playing" texts that changed: touching the whole list makes the picture blink
     updateNowTexts()
     m.osd.visible = false
-    m.side.visible = true
+    m.sideOpen = true
+    m.side.opacity = 1
     m.sideList.jumpToItem = m.liveIndex
     m.sideList.setFocus(true)
 end sub
 
 sub closeSide()
-    if not m.side.visible then return
-    m.side.visible = false
+    if not m.sideOpen then return
+    m.sideOpen = false
+    m.side.opacity = 0
     m.keys.setFocus(true)
 end sub
 
@@ -1607,7 +1610,7 @@ sub onMenuButton()
 end sub
 
 sub restoreFocus()
-    if m.side.visible then
+    if m.sideOpen then
         m.sideList.setFocus(true)
     else if m.video.visible and (m.liveFull or not m.liveMode) then
         m.keys.setFocus(true)
@@ -1632,7 +1635,7 @@ end sub
 
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
-    if m.side.visible then
+    if m.sideOpen then
         if key = "back" or key = "right" or key = "left" then closeSide()
         return true
     end if

@@ -51,7 +51,7 @@
     <Video id="video" width="1920" height="1080" visible="false" enableUI="false" />
 
     <!-- channel list over the picture (left arrow while watching TV) -->
-    <Group id="side" visible="false">
+    <Group id="side" visible="true" opacity="0">
       <Rectangle width="640" height="1080" color="0x0B1020EE" />
       <Label translation="[40,40]" text="Canales" font="font:LargeBoldSystemFont" color="0xFFFFFFFF" />
       <MarkupList id="sideList" translation="[20,110]" itemComponentName="ChannelItem" itemSize="[600,88]" itemSpacing="[0,4]" numRows="10"
@@ -61,7 +61,7 @@
 
     <!-- player controls -->
     <Group id="osd" visible="false">
-      <Poster id="osdLogo" translation="[1640,822]" width="200" height="90" loadDisplayMode="scaleToFit" />
+      <Poster id="osdLogo" translation="[1640,822]" width="200" height="90" loadWidth="200" loadHeight="90" loadDisplayMode="scaleToFit" />
       <Rectangle translation="[0,800]" width="1920" height="280" color="0x000000B0" />
       <Label id="osdTitle" translation="[80,830]" width="1760" font="font:MediumBoldSystemFont" color="0xFFFFFFFF" />
       <Label id="osdState" translation="[80,880]" width="1760" font="font:SmallSystemFont" color="0xFFC857FF" />
