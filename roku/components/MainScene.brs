@@ -583,11 +583,11 @@ sub onM3u(ev as object)
     end if
     fillGuide()
     if m.firstStart then
-        ' opening the app: Canal 13, full screen
+        ' opening the app: the last channel watched (Canal 13 the first time), full screen
         m.firstStart = false
         m.previewTimer.control = "stop"
         goFull()
-        playChannel(canal13Index())
+        playChannel(lastChannel())
         goFull()
     else
         if m.liveIndex = invalid then m.liveIndex = lastChannel()
@@ -613,10 +613,17 @@ sub onGuide(ev as object)
     refreshNow()
 end sub
 
+' the channel watched last (found by name, so it survives changes in the list); Canal 13 the first time
 function lastChannel() as integer
-    i = Val(readReg("lastChannel"))
     if m.channelsNode = invalid then return 0
-    if i < 0 or i >= m.channelsNode.getChildCount() then return 0
+    name = readReg("lastChannelName")
+    if name <> "" then
+        for i = 0 to m.channelsNode.getChildCount() - 1
+            if m.channelsNode.getChild(i).title = name then return i
+        end for
+    end if
+    i = Val(readReg("lastChannel"))
+    if readReg("lastChannel") = "" or i < 0 or i >= m.channelsNode.getChildCount() then return canal13Index()
     return Int(i)
 end function
 
@@ -879,6 +886,7 @@ sub playChannel(index as integer)
     url = opts[k].url
     m.liveIndex = index
     writeReg("lastChannel", index.ToStr())
+    writeReg("lastChannelName", ch.title)
     m.liveMode = true
     m.playing = invalid
     m.resumeAt = 0
