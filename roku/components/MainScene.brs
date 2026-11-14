@@ -80,6 +80,7 @@ sub init()
     m.stallSince = 0
     m.pickedAt = -10000
     m.sideOpen = false
+    m.liveUrl = ""
     m.liveFull = false
     m.liveIndex = invalid
     m.guide2 = invalid
@@ -575,6 +576,11 @@ sub onM3u(ev as object)
     if t.result = invalid then return
     m.channelsNode = t.result
     m.sideList.content = m.channelsNode
+    urls = []
+    for i = 0 to m.channelsNode.getChildCount() - 1
+        urls.push(m.channelsNode.getChild(i).hdPosterUrl)
+    end for
+    runTask("logos", FormatJson(urls), "onLogos")
     if m.mode <> "live" then return
     m.gridStatus.text = ""
     if m.channelsNode.getChildCount() = 0 then
@@ -596,6 +602,17 @@ sub onM3u(ev as object)
         playChannel(m.liveIndex)
         if m.liveFull then m.keys.setFocus(true) else if not m.tabsFocused then m.guideList.setFocus(true)
     end if
+end sub
+
+sub onLogos(ev as object)
+    t = ev.getRoSGNode()
+    if ev.getField() = "error" or t.result = invalid or m.channelsNode = invalid then return
+    map = t.result.logos
+    for i = 0 to m.channelsNode.getChildCount() - 1
+        ch = m.channelsNode.getChild(i)
+        f = map[ch.hdPosterUrl]
+        if f <> invalid then ch.hdPosterUrl = f
+    end for
 end sub
 
 function canal13Index() as integer
@@ -873,7 +890,7 @@ sub setAlt(name as string, i as integer)
     writeReg("alt", FormatJson(a))
 end sub
 
-sub playChannel(index as integer)
+sub playChannel(index as integer, force = false as boolean)
     if m.channelsNode = invalid then return
     n = m.channelsNode.getChildCount()
     if n = 0 then return
@@ -884,6 +901,12 @@ sub playChannel(index as integer)
     k = altIndex(ch.title)
     if k >= opts.Count() then k = 0
     url = opts[k].url
+    ' the same channel already on screen: leave it playing, never reload it
+    if not force and m.liveMode and m.video.visible and m.liveUrl = url then
+        st = m.video.state
+        if st = "playing" or st = "buffering" or st = "paused" then return
+    end if
+    m.liveUrl = url
     m.liveIndex = index
     writeReg("lastChannel", index.ToStr())
     writeReg("lastChannelName", ch.title)
@@ -1601,7 +1624,7 @@ sub onMenuButton()
     else if Left(action, 2) = "o:" then
         ch = m.channelsNode.getChild(m.liveIndex)
         setAlt(ch.title, Val(Mid(action, 3)))
-        playChannel(m.liveIndex)
+        playChannel(m.liveIndex, true)
         return
     else if action = "subsLive" then
         showSubtitleMenu()

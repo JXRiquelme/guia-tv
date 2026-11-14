@@ -15,6 +15,9 @@ sub fetchData()
     else if kind = "search" then
         search()
         return
+    else if kind = "logos" then
+        saveLogos()
+        return
     end if
     url = base
     if kind = "vodcats" then url = base + "&action=get_vod_categories"
@@ -381,3 +384,28 @@ function plain(s as string) as string
     end for
     return s
 end function
+
+' ------------------------------------------------------------------ channel logos kept on the device
+' Opening the channel list then reads them from the Roku itself: no downloads competing with the
+' channel being watched (that made the picture stop to load for a moment).
+sub saveLogos()
+    urls = ParseJson(m.top.param)
+    if type(urls) <> "roArray" then return
+    fs = CreateObject("roFileSystem")
+    map = {}
+    for each u in urls
+        if u <> "" and LCase(Left(u, 4)) = "http" then
+            ba = CreateObject("roByteArray")
+            ba.FromAsciiString(u)
+            dg = CreateObject("roEVPDigest")
+            dg.Setup("md5")
+            file = "cachefs:/logo_" + dg.Process(ba)
+            ok = fs.Exists(file)
+            if not ok then ok = download(u, file)
+            if ok then map[u] = file
+        end if
+    end for
+    root = CreateObject("roSGNode", "ContentNode")
+    root.addFields({ logos: map })
+    m.top.result = root
+end sub
