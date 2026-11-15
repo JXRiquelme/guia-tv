@@ -554,8 +554,28 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- playback
 
+    /** When the current player was made: after a long while the TV box's video decoder can wedge. */
+    private var playerBornAt = 0L
+    /** Frozen-picture watch: decoded frames and playback position seen on the last health check. */
+    private var freezeFrames = -1
+    private var freezePos = -1L
+    private var freezeSince = 0L
+
+    /**
+     * Throws the player away and makes a new one (fresh video decoder). Cheap insurance on
+     * TV boxes whose decoder wedges after long viewing: sound keeps going, the picture freezes
+     * on the last frame and the next channel won't open.
+     */
+    private fun rebuildPlayer() {
+        releasePlayer()
+        freezeFrames = -1
+        freezeSince = 0L
+        ensurePlayer()
+    }
+
     private fun ensurePlayer(): ExoPlayer {
         player?.let { return it }
+        playerBornAt = SystemClock.elapsedRealtime()
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(Net.USER_AGENT)
             .setAllowCrossProtocolRedirects(true)
@@ -699,6 +719,10 @@ class MainActivity : Activity() {
         stallSince = 0L
         Diag.reset()
         lastByteAt = 0L
+        // a player that has been playing for a long time gets replaced when changing channel
+        if (player != null && SystemClock.elapsedRealtime() - playerBornAt > 20 * 60_000L) rebuildPlayer()
+        freezeFrames = -1
+        freezeSince = 0L
         val p = ensurePlayer()
         applyLanguages(p)
         p.setMediaItem(liveItem(ch))
@@ -749,6 +773,13 @@ class MainActivity : Activity() {
                     if (stallSince == 0L || now - stallSince > 25_000) { lastByteAt = now; recover() }
                 } else if (p.playbackState == Player.STATE_READY) { stallSince = 0L; recoverAttempts = 0 }
             } else if (p != null && castingTo == null && p.playWhenReady && vod == null) {
+                // picture frozen while the sound goes on: the video decoder is stuck -> new player
+                if (pictureFrozen(p)) {
+                    showStatus("Recuperando la imagen…")
+                    rebuildPlayer()
+                    play(current)
+                    return
+                }
                 val failed = p.playbackState == Player.STATE_IDLE && p.playerError != null
                 val stuck = p.playbackState == Player.STATE_BUFFERING || failed
                 val now = SystemClock.elapsedRealtime()
@@ -768,11 +799,43 @@ class MainActivity : Activity() {
                         recoverAttempts == 0 && p.currentPosition < 1_000 -> 10_000L
                         else -> 6_000L
                     }
-                    if (now - stallSince >= limit) recover()
+                    if (now - stallSince >= limit) {
+                        // two tries on the same player didn't help: it may be the decoder, start fresh
+                        if (recoverAttempts >= 2 && recoverAttempts % 2 == 0) {
+                            val keep = recoverAttempts
+                            rebuildPlayer()
+                            play(current)
+                            recoverAttempts = keep
+                            stallSince = now
+                            return
+                        }
+                        recover()
+                    }
                 } else stallSince = 0L
             }
             main.postDelayed(this, 1_000)
         }
+    }
+
+    /** True when playback advances (sound) but no new video frame has been shown for 4 s. */
+    private fun pictureFrozen(p: ExoPlayer): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        val f = p.videoFormat
+        val counters = p.videoDecoderCounters
+        if (!p.isPlaying || f == null || f.width <= 0 || counters == null) {
+            freezeFrames = -1
+            freezeSince = 0L
+            return false
+        }
+        counters.ensureUpdated()
+        val frames = counters.renderedOutputBufferCount
+        val pos = p.currentPosition
+        if (freezeFrames >= 0 && frames == freezeFrames && pos > freezePos + 500) {
+            if (freezeSince == 0L) freezeSince = now
+        } else freezeSince = 0L
+        freezeFrames = frames
+        freezePos = pos
+        return freezeSince != 0L && now - freezeSince >= 4_000
     }
 
     private fun recover() {
