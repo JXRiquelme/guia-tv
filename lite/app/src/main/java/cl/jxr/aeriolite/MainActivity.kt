@@ -560,6 +560,7 @@ class MainActivity : Activity() {
     private var freezeFrames = -1
     private var freezePos = -1L
     private var freezeSince = 0L
+    private var lastFreezeFix = 0L
 
     /**
      * Throws the player away and makes a new one (fresh video decoder). Cheap insurance on
@@ -774,7 +775,9 @@ class MainActivity : Activity() {
                 } else if (p.playbackState == Player.STATE_READY) { stallSince = 0L; recoverAttempts = 0 }
             } else if (p != null && castingTo == null && p.playWhenReady && vod == null) {
                 // picture frozen while the sound goes on: the video decoder is stuck -> new player
-                if (pictureFrozen(p)) {
+                // (only once a minute: a channel that keeps freezing is left to the normal retries)
+                if (pictureFrozen(p) && SystemClock.elapsedRealtime() - lastFreezeFix > 60_000) {
+                    lastFreezeFix = SystemClock.elapsedRealtime()
                     showStatus("Recuperando la imagen…")
                     rebuildPlayer()
                     play(current)
@@ -801,7 +804,7 @@ class MainActivity : Activity() {
                     }
                     if (now - stallSince >= limit) {
                         // two tries on the same player didn't help: it may be the decoder, start fresh
-                        if (recoverAttempts >= 2 && recoverAttempts % 2 == 0) {
+                        if (recoverAttempts == 4) {
                             val keep = recoverAttempts
                             rebuildPlayer()
                             play(current)
@@ -828,14 +831,15 @@ class MainActivity : Activity() {
             return false
         }
         counters.ensureUpdated()
-        val frames = counters.renderedOutputBufferCount
+        // every frame the decoder put out, shown or dropped: a slow box dropping frames is not frozen
+        val frames = counters.renderedOutputBufferCount + counters.droppedBufferCount + counters.skippedOutputBufferCount
         val pos = p.currentPosition
         if (freezeFrames >= 0 && frames == freezeFrames && pos > freezePos + 500) {
             if (freezeSince == 0L) freezeSince = now
         } else freezeSince = 0L
         freezeFrames = frames
         freezePos = pos
-        return freezeSince != 0L && now - freezeSince >= 4_000
+        return freezeSince != 0L && now - freezeSince >= 6_000
     }
 
     private fun recover() {
