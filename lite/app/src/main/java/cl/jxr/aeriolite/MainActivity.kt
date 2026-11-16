@@ -2143,6 +2143,7 @@ class MainActivity : Activity() {
                 if (token != loadToken || series != browserSeries) return@post
                 result.onSuccess {
                     categoryCache[series] = it
+                    hideAdultByDefault(series, it)
                     cats = it
                     buildChips()
                     if (then != null) then() else selectCategory(selectedCat[series] ?: defaultCategory())
@@ -2151,6 +2152,20 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+    /**
+     * The first time the categories arrive, the adult ones (the service's last two, plus any whose
+     * name says so) start switched off. Done once: turning them back on in the filter is respected.
+     */
+    private fun hideAdultByDefault(series: Boolean, list: List<Category>) {
+        val done = if (series) "adult_off_series" else "adult_off_vod"
+        if (prefs.getBoolean(done, false) || list.isEmpty()) return
+        val rx = Regex("adult|xxx|\\+ ?18|porn|er[oó]tic", RegexOption.IGNORE_CASE)
+        val set = hiddenCats(series)
+        list.takeLast(2).forEach { set.add(it.id) }
+        list.filter { rx.containsMatchIn(it.name) }.forEach { set.add(it.id) }
+        prefs.edit().putStringSet(if (series) "hide_series" else "hide_vod", HashSet(set)).putBoolean(done, true).apply()
     }
 
     /** Horizontal row of category chips (hidden ones left out). */
