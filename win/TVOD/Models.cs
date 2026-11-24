@@ -180,15 +180,22 @@ public static class GuideParser
                 if (!r.IsEmptyElement)
                 {
                     int depth = r.Depth;
-                    while (r.Read() && !(r.NodeType == XmlNodeType.EndElement && r.Depth == depth))
+                    r.Read();
+                    // ReadElementContentAsString already moves to the next node: no extra Read() after it
+                    while (!r.EOF && !(r.NodeType == XmlNodeType.EndElement && r.Depth == depth))
                     {
-                        if (r.NodeType != XmlNodeType.Element) continue;
-                        if (r.Name == "title" && title.Length == 0) title = r.ReadElementContentAsString().Trim();
-                        else if (r.Name == "desc" && desc.Length == 0)
+                        if (r.NodeType == XmlNodeType.Element && r.Name == "title" && title.Length == 0)
                         {
-                            desc = r.ReadElementContentAsString().Trim();
-                            if (desc.Length > 400) desc = desc.Substring(0, 400);
+                            try { title = r.ReadElementContentAsString().Trim(); } catch { r.Skip(); }
+                            continue;
                         }
+                        if (r.NodeType == XmlNodeType.Element && r.Name == "desc" && desc.Length == 0)
+                        {
+                            try { desc = r.ReadElementContentAsString().Trim(); } catch { r.Skip(); }
+                            if (desc.Length > 400) desc = desc.Substring(0, 400);
+                            continue;
+                        }
+                        r.Read();
                     }
                 }
                 if (!result.TryGetValue(ch, out var list)) result[ch] = list = new List<Prog>();

@@ -142,7 +142,7 @@ public partial class Shell : Window
         StartLive();
     }
 
-    public void Closing()
+    public void AppClosing()
     {
         try { SaveVodProgress(); } catch { }
         mpv?.Close();

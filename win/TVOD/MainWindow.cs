@@ -74,7 +74,7 @@ public class MainWindow : Window
         // keys pressed while this (and not the layer on top) has the focus
         PreviewKeyDown += (_, e) => Ui?.HandleKey(e);
         PreviewMouseWheel += (_, e) => Ui?.HandleWheel(e);
-        Closing += (_, _) => Ui?.Closing();
+        Closing += (_, _) => Ui?.AppClosing();
     }
 
     public void BringToFront()

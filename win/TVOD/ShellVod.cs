@@ -27,7 +27,6 @@ public partial class Shell
     HashSet<string> hiddenMovieCats = Store.GetSet("hide_vod");
     HashSet<string> hiddenSeriesCats = Store.GetSet("hide_series");
     List<VodItem> gridItems = new();
-    List<Watch> gridWatches;
     GridMode gridMode = GridMode.Category;
     string gridLabel = "";
     int loadToken;

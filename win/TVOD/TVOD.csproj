@@ -16,6 +16,7 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <NoWarn>CS8632;CA1416;CS0649</NoWarn>
   </PropertyGroup>
   <ItemGroup>
