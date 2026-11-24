@@ -568,7 +568,11 @@ class MainActivity : Activity() {
      * TV boxes whose decoder wedges after long viewing: sound keeps going, the picture freezes
      * on the last frame and the next channel won't open.
      */
+    private var playerRebuilds = 0
+    private var freezeFixes = 0
+
     private fun rebuildPlayer() {
+        playerRebuilds++
         releasePlayer()
         freezeFrames = -1
         freezeSince = 0L
@@ -779,6 +783,7 @@ class MainActivity : Activity() {
                 // (only once a minute: a channel that keeps freezing is left to the normal retries)
                 if (pictureFrozen(p) && SystemClock.elapsedRealtime() - lastFreezeFix > 60_000) {
                     lastFreezeFix = SystemClock.elapsedRealtime()
+                    freezeFixes++
                     showStatus("Recuperando la imagen…")
                     rebuildPlayer()
                     play(current)
@@ -1655,6 +1660,7 @@ class MainActivity : Activity() {
         lines.add("Video ${v?.sampleMimeType?.substringAfter('/') ?: "—"} (${short(Diag.videoDecoder).ifEmpty { "—" }})  ·  " +
             "Audio ${a?.sampleMimeType?.substringAfter('/') ?: "—"} (${short(Diag.audioDecoder).ifEmpty { "—" }})")
         if (Diag.dropped > 0) lines.add("Cuadros perdidos ${Diag.dropped}")
+        if (playerRebuilds > 0) lines.add("Reproductor reiniciado ${playerRebuilds} veces (imagen congelada: $freezeFixes)")
         return lines.joinToString("\n")
     }
 
@@ -2937,9 +2943,11 @@ class MainActivity : Activity() {
             "Cuenta de películas y series",
             "Cambiar dirección de la lista",
             google,
+            "Diagnóstico (datos técnicos en pantalla):  ${if (statsOn) "Activado" else "Desactivado"}",
         ), -1) { pick ->
             when (pick) {
                 4 -> openGoogleAccount()
+                5 -> toggleStats()
                 0 -> showPicker("Idioma del audio", audioChoices.map { it.second }, audioChoices.indexOfFirst { it.first == audioPref() }) { a ->
                     prefs.edit().putString("audio_lang", audioChoices[a].first).apply()
                     player?.let(::applyLanguages)
