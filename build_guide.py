@@ -121,19 +121,23 @@ def main():
             report.append("fuente %s: error al descargar (%s)" % (src, exc))
             continue
         count = 0
-        for _, el in ET.iterparse(io.BytesIO(data), events=("end",)):
-            if el.tag == "programme":
-                cid = el.get("channel", "")
-                if cid in ids:
-                    start, stop = epoch(el.get("start")), epoch(el.get("stop"))
-                    if start and stop and stop > now - 86400 and start < now + 8 * 86400:
-                        progs.setdefault((src, cid), []).append((
-                            start, stop,
-                            el.findtext("title") or "",
-                            el.findtext("desc") or "",
-                            [c.text for c in el.findall("category") if c.text]))
-                        count += 1
-                el.clear()
+        # una fuente que entrega algo roto (p. ej. una página de error) no debe tumbar toda la guía
+        try:
+            for _, el in ET.iterparse(io.BytesIO(data), events=("end",)):
+                if el.tag == "programme":
+                    cid = el.get("channel", "")
+                    if cid in ids:
+                        start, stop = epoch(el.get("start")), epoch(el.get("stop"))
+                        if start and stop and stop > now - 86400 and start < now + 8 * 86400:
+                            progs.setdefault((src, cid), []).append((
+                                start, stop,
+                                el.findtext("title") or "",
+                                el.findtext("desc") or "",
+                                [c.text for c in el.findall("category") if c.text]))
+                            count += 1
+                    el.clear()
+        except ET.ParseError as exc:
+            report.append("fuente %s: archivo dañado (%s), se usa lo leído hasta ahí" % (src, exc))
         report.append("fuente %s: %d programas usados" % (src, count))
         del data
 

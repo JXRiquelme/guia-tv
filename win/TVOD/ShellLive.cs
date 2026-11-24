@@ -13,6 +13,7 @@ public partial class Shell
     List<Channel> channels = new();
     int current;
     Dictionary<string, List<Prog>> guide = new();
+    bool guideLoaded;
     HashSet<string> hiddenChannels = Store.GetSet("hide_ch");
     XtreamAccount playlistAccount;
     int? altOverride;
@@ -113,6 +114,7 @@ public partial class Shell
             catch { return new Dictionary<string, List<Prog>>(); }
         });
         guide = map;
+        guideLoaded = true;
         UpdateInfo();
         if (Visible(panel)) RenderPanel();
         if (Visible(epg)) RenderEpg();
@@ -387,7 +389,7 @@ public partial class Shell
         }
         else
         {
-            infoNow.Text = guide.Count == 0 ? "Cargando guía…" : "Sin información de programación";
+            infoNow.Text = guideLoaded ? "Sin información de programación" : "Cargando guía…";
             infoProgress.Visibility = Visibility.Collapsed;
         }
         infoNext.Text = next != null ? $"Luego: {Ui.HHmm(next.Start)}  {next.Title}" : "";
