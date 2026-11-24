@@ -47,3 +47,46 @@ jobs:
             TVOD para Windows 10/11 (64 bits). Descomprime y abre TVOD.exe.
           files: TVOD-Windows.zip
           make_latest: false
+
+  # Prueba de humo: abre la app con una lista pública de prueba y saca capturas de pantalla.
+  smoke:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tvod-windows
+      - name: Abrir y capturar
+        shell: pwsh
+        run: |
+          Expand-Archive TVOD-Windows.zip -DestinationPath app
+          '{"list":"https://raw.githubusercontent.com/JXRiquelme/guia-tv/main/win/test/prueba.m3u"}' | Set-Content app/account.json
+          Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+          function Shot($name) {
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("$PWD/shots/$name.png")
+          }
+          New-Item -ItemType Directory shots | Out-Null
+          $p = Start-Process app/TVOD.exe -PassThru
+          Start-Sleep 25
+          Shot "1-inicio"
+          $ws = New-Object -ComObject WScript.Shell
+          $ws.AppActivate($p.Id) | Out-Null
+          Start-Sleep 1
+          $ws.SendKeys("{LEFT}"); Start-Sleep 3; Shot "2-lista"
+          $ws.SendKeys("{ESC}"); Start-Sleep 1
+          $ws.SendKeys("{RIGHT}"); Start-Sleep 3; Shot "3-guia"
+          $ws.SendKeys("{ESC}"); Start-Sleep 1
+          $ws.SendKeys("i"); Start-Sleep 2; Shot "4-info"
+          $ws.SendKeys("{DOWN}"); Start-Sleep 8; Shot "5-zap"
+          "Proceso vivo: $(-not $p.HasExited)"
+          $log = "$env:LOCALAPPDATA/TVOD/errores.log"
+          if (Test-Path $log) { Get-Content $log } else { "sin errores.log" }
+          if (-not $p.HasExited) { Stop-Process $p }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capturas
+          path: shots
