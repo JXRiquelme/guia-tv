@@ -309,6 +309,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         prefs = getSharedPreferences("lite", Context.MODE_PRIVATE)
+        applyBundledAccount()
         logos = Logos(this)
         history = History(prefs)
         later = Later(prefs)
@@ -1720,6 +1721,25 @@ class MainActivity : Activity() {
     }
 
     // ---------------------------------------------------------------- movies & series playback
+
+    /**
+     * A copy of the app can come with the service filled in: assets/account.json
+     * {"server","user","pass","list"} (added to the APK by hand, never to the public repo).
+     * Only fills what is still empty, so a later change in the settings is kept.
+     */
+    private fun applyBundledAccount() {
+        val text = try { assets.open("account.json").bufferedReader().use { it.readText() } } catch (_: Exception) { return }
+        try {
+            val o = org.json.JSONObject(text)
+            val e = prefs.edit()
+            val list = o.optString("list").trim()
+            if (prefs.getString("list", "").isNullOrEmpty() && list.startsWith("http")) e.putString("list", list)
+            val acc = XtreamAccount(o.optString("server").trim(), o.optString("user").trim(), o.optString("pass").trim())
+            if (prefs.getString("xt_server", "").isNullOrEmpty() && acc.valid)
+                e.putString("xt_server", acc.base).putString("xt_user", acc.user).putString("xt_pass", acc.pass)
+            e.apply()
+        } catch (_: Exception) { }
+    }
 
     private fun xtream(): XtreamAccount? {
         playlistAccount?.let { return it }
