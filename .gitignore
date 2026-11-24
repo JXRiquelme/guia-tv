@@ -1,2 +1,7 @@
 roku/source/account.json
 roku/source/canales.m3u
+
+# Windows: credenciales solo en el zip entregado, nunca en el repo
+win/TVOD/account.json
+win/TVOD/bin/
+win/TVOD/obj/

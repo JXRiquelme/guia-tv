@@ -1,0 +1,49 @@
+name: Compilar TVOD para Windows
+
+on:
+  push:
+    branches: [main]
+    paths: ["win/**", ".github/workflows/win.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Compilar
+        run: dotnet publish win/TVOD/TVOD.csproj -c Release -o win/out -p:DebugType=None
+      - name: Reproductor (libmpv)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p mpvdev
+          gh release download --repo shinchiro/mpv-winbuild-cmake --pattern "mpv-dev-x86_64-2*" -D mpvdev \
+            || gh release download --repo zhongfly/mpv-winbuild --pattern "mpv-dev-x86_64-2*" -D mpvdev
+          ls mpvdev
+          7z x mpvdev/*.7z -ompvdev/x > /dev/null
+          cp mpvdev/x/libmpv-2.dll win/out/
+          ls -la win/out
+      - name: Empaquetar
+        shell: pwsh
+        run: Compress-Archive -Path win/out/* -DestinationPath TVOD-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tvod-windows
+          path: TVOD-Windows.zip
+      - name: Publicar en Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: lite-win
+          name: TVOD para Windows
+          body: |
+            TVOD para Windows 10/11 (64 bits). Descomprime y abre TVOD.exe.
+          files: TVOD-Windows.zip
+          make_latest: false
