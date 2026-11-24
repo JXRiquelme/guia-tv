@@ -86,7 +86,11 @@ jobs:
           $log = "$env:LOCALAPPDATA/TVOD/errores.log"
           if (Test-Path $log) { Get-Content $log } else { "sin errores.log" }
           if (-not $p.HasExited) { Stop-Process $p }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: capturas
-          path: shots
+      - name: Subir capturas
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd shots && 7z a ../capturas.zip *.png > /dev/null && cd ..
+          gh release view win-pruebas -R ${{ github.repository }} > /dev/null 2>&1 || gh release create win-pruebas -R ${{ github.repository }} --prerelease --title "Pruebas Windows" --notes "Capturas de la prueba automática"
+          gh release upload win-pruebas capturas.zip --clobber -R ${{ github.repository }}
