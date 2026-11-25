@@ -568,6 +568,44 @@ class MainActivity : Activity() {
      * TV boxes whose decoder wedges after long viewing: sound keeps going, the picture freezes
      * on the last frame and the next channel won't open.
      */
+    /** Video decoders that could not keep up on this device (most frames dropped). */
+    private val slowDecoders = HashSet<String>()
+    private var dropRate = -1
+    private var dropWindowStart = 0L
+    private var dropBase = -1
+    private var shownBase = -1
+    private var lastDecoderSwap = 0L
+
+    /**
+     * Every second: share of frames dropped over the last ~10 s. When the decoder drops most of them
+     * (picture "stuck", a few frames per second) and the device has another decoder, switch to it.
+     */
+    private fun watchDrops(p: ExoPlayer): Boolean {
+        val c = p.videoDecoderCounters ?: return false
+        if (!p.isPlaying || p.videoFormat == null) { dropBase = -1; return false }
+        c.ensureUpdated()
+        val now = SystemClock.elapsedRealtime()
+        if (dropBase < 0) { dropBase = c.droppedBufferCount; shownBase = c.renderedOutputBufferCount; dropWindowStart = now; return false }
+        if (now - dropWindowStart < 10_000) return false
+        val dropped = c.droppedBufferCount - dropBase
+        val shown = c.renderedOutputBufferCount - shownBase
+        dropBase = c.droppedBufferCount
+        shownBase = c.renderedOutputBufferCount
+        dropWindowStart = now
+        if (dropped < 0 || shown < 0 || dropped + shown <= 0) return false
+        dropRate = dropped * 100 / (dropped + shown)
+        val decoder = Diag.videoDecoder
+        if (dropRate < 40 || decoder.isEmpty() || now - lastDecoderSwap < 60_000) return false
+        val mime = p.videoFormat?.sampleMimeType ?: return false
+        val others = try {
+            androidx.media3.exoplayer.mediacodec.MediaCodecUtil.getDecoderInfos(mime, false, false).count { it.name != decoder && it.name !in slowDecoders }
+        } catch (_: Exception) { 0 }
+        if (others == 0) return false
+        slowDecoders.add(decoder)
+        lastDecoderSwap = now
+        return true
+    }
+
     private var playerRebuilds = 0
     private var freezeFixes = 0
 
@@ -624,9 +662,17 @@ class MainActivity : Activity() {
         // The device's own audio decoders go first (movies with 5.1 / AC-3 audio stalled at 0:00
         // when FFmpeg was preferred); FFmpeg only takes formats the device can't decode
         // (AC-3, E-AC-3, MP2… on phones without them), so those channels are not silent.
+        // Hardware decoders first; a decoder that could not keep up (most frames dropped) is skipped
+        // from then on, so the next player uses another one the device has.
+        val selector = androidx.media3.exoplayer.mediacodec.MediaCodecSelector { mime, secure, tunneling ->
+            val all = androidx.media3.exoplayer.mediacodec.MediaCodecUtil.getDecoderInfos(mime, secure, tunneling)
+            val usable = all.filter { it.name !in slowDecoders }.ifEmpty { all }
+            usable.sortedByDescending { it.hardwareAccelerated }
+        }
         val renderers = DefaultRenderersFactory(this)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
+            .setMediaCodecSelector(selector)
         val p = ExoPlayer.Builder(this, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(http, FastSeekExtractors(extractors)).setLoadErrorHandlingPolicy(retries))
             .setLoadControl(load)
@@ -729,6 +775,8 @@ class MainActivity : Activity() {
         if (player != null && SystemClock.elapsedRealtime() - playerBornAt > 20 * 60_000L) rebuildPlayer()
         freezeFrames = -1
         freezeSince = 0L
+        dropBase = -1
+        dropRate = -1
         val p = ensurePlayer()
         applyLanguages(p)
         p.setMediaItem(liveItem(ch))
@@ -779,6 +827,14 @@ class MainActivity : Activity() {
                     if (stallSince == 0L || now - stallSince > 25_000) { lastByteAt = now; recover() }
                 } else if (p.playbackState == Player.STATE_READY) { stallSince = 0L; recoverAttempts = 0 }
             } else if (p != null && castingTo == null && p.playWhenReady && vod == null) {
+                // the decoder can't keep up (picture at a few frames per second): try another one
+                if (watchDrops(p)) {
+                    Toast.makeText(this@MainActivity, "La imagen iba a saltos: probando otro decodificador de video…", Toast.LENGTH_LONG).show()
+                    dropBase = -1
+                    rebuildPlayer()
+                    play(current)
+                    return
+                }
                 // picture frozen while the sound goes on: the video decoder is stuck -> new player
                 // (only once a minute: a channel that keeps freezing is left to the normal retries)
                 if (pictureFrozen(p) && SystemClock.elapsedRealtime() - lastFreezeFix > 60_000) {
@@ -1650,7 +1706,7 @@ class MainActivity : Activity() {
         val v = p.videoFormat
         val a = p.audioFormat
         val rate = listOf(v?.averageBitrate ?: -1, v?.bitrate ?: -1, v?.peakBitrate ?: -1).firstOrNull { it > 0 }?.toLong() ?: -1L
-        fun short(name: String) = name.substringAfterLast('.').removePrefix("OMX.").take(28)
+        fun short(name: String) = name.removePrefix("OMX.").removePrefix("c2.").take(34)
         val lines = mutableListOf<String>()
         if (vod != null) lines.add("Primer cuadro ${secs(Diag.firstFrameMs)}")
         lines.add("Velocidad ${mbps(Diag.bandwidth)}  ·  Video ${mbps(rate)}  ·  Buffer ${p.totalBufferedDuration / 1000} s")
@@ -1659,7 +1715,8 @@ class MainActivity : Activity() {
         if (Diag.lastError.isNotEmpty()) lines.add("Último error: ${Diag.lastError}")
         lines.add("Video ${v?.sampleMimeType?.substringAfter('/') ?: "—"} (${short(Diag.videoDecoder).ifEmpty { "—" }})  ·  " +
             "Audio ${a?.sampleMimeType?.substringAfter('/') ?: "—"} (${short(Diag.audioDecoder).ifEmpty { "—" }})")
-        if (Diag.dropped > 0) lines.add("Cuadros perdidos ${Diag.dropped}")
+        if (Diag.dropped > 0) lines.add("Cuadros perdidos ${Diag.dropped}" + (if (dropRate >= 0) "  (${dropRate} % ahora)" else ""))
+        if (slowDecoders.isNotEmpty()) lines.add("Decodificador cambiado (lento: ${slowDecoders.joinToString { short(it) }})")
         if (playerRebuilds > 0) lines.add("Reproductor reiniciado ${playerRebuilds} veces (imagen congelada: $freezeFixes)")
         return lines.joinToString("\n")
     }
