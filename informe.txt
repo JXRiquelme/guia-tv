@@ -1,10 +1,10 @@
-Actualizado: 2026-11-27 08:32 UTC
+Actualizado: 2026-11-27 21:17 UTC
 
-fuente cl: 2292 programas usados
+fuente cl: 1838 programas usados
 fuente srv: 6339 programas usados
-fuente ar: 366 programas usados
+fuente ar: 294 programas usados
 fuente dtv: 58 programas usados
-fuente es: 386 programas usados
+fuente es: 299 programas usados
 canal13          cl / Canal.13.de.Chile.cl (ajuste +0 min)
 t13              srv / C13T13 (ajuste +0 min)
 13c              srv / C13CABH (ajuste +0 min)
